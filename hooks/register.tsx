@@ -1,5 +1,7 @@
 import { atom, read, update } from 'claude-code'
-import type { EngineInterface, PluginOptions, Register } from 'claude-code'
+import type { CommandRunResult, CommandSpec, EngineInterface, PluginOptions, Register } from 'claude-code'
+
+import type { Shelf, View } from '../types'
 
 import {
   KINDS,
@@ -13,6 +15,10 @@ import {
   summarizeInbox,
 } from './core'
 import type { Jot, Thresholds } from './core'
+import { DRAFT_PROMPT, decisionPrompt, draftCommand, expandPrompt, exportPrompt, parseDraft, readingPrompt } from './handoff'
+import type { ReadingState } from './handoff'
+import { SHELVES, findNote, parseNote, sortNotes, stateOf, titleOf } from './notes'
+import type { Note } from './notes'
 
 const backlog = atom({ plugin: 'vault-jot', key: 'backlog' } as const, null)
 const isHidden = atom({ plugin: 'vault-jot', key: 'isHidden' } as const, false)
@@ -99,6 +105,32 @@ async function capture($: EngineInterface, config: Config, jot: Jot): Promise<st
 
 // The backlog shows as a prompt-footer label (see the SessionMode hook); the
 // status line is kept for problems, which the engine marks as notices.
+// `/jot` with no text: a fork of the conversation drafts one capture, and the
+// draft goes into the prompt box as a `/jot` command, so nothing is saved
+// until the person edits or accepts it with Enter.
+async function draft($: EngineInterface): Promise<CommandRunResult> {
+  const reply = await $.model.fork({ prompt: DRAFT_PROMPT })
+  if (!reply.isAnswered) {
+    return {
+      text:
+        reply.reason === 'nothing-to-fork'
+          ? `vault-jot: nothing to draft from yet. ${USAGE}`
+          : `vault-jot: could not draft a capture (${reply.reason}). ${USAGE}`,
+    }
+  }
+  const jot = parseDraft(reply.text)
+  if (jot === null) {
+    return { text: `vault-jot: the draft came back empty. ${USAGE}` }
+  }
+  const command = draftCommand(jot)
+  const filled = await $.prompt.fill({ text: command })
+  if (!filled.isFilled) {
+    return { text: `vault-jot: could not fill the prompt (${filled.refusal ?? 'refused'}). Draft: ${command}` }
+  }
+
+  return { text: 'vault-jot: draft is in your prompt. Edit it and press Enter to save, or clear it.' }
+}
+
 async function refresh($: EngineInterface, config: Config) {
   try {
     const { inbox } = await resolveVault($, config)
@@ -112,6 +144,41 @@ async function refresh($: EngineInterface, config: Config) {
   }
 }
 
+// The incubate pane browses wiki/ideas and wiki/reading; it only reads notes
+// and hands every change to Claude.
+const PANE = 'incubate'
+const HOME: View = { layer: 'home' }
+const view = atom({ plugin: 'vault-jot', key: 'view' } as const, HOME)
+
+// Each draw reads a shelf's notes from disk, so the pane always shows what
+// Claude last wrote. Bounded: past this many notes a shelf says it is cut.
+const SHELF_MAX = 200
+
+type Loaded = { notes: Note[]; isTruncated: boolean }
+
+async function loadShelf($: EngineInterface, vault: string, shelf: Shelf): Promise<Loaded> {
+  const dir = `${vault}/${SHELVES[shelf].folder}`
+  // No folder yet means nothing has been ingested into this shelf.
+  if (!(await $.fs.exists(dir))) {
+    return { notes: [], isTruncated: false }
+  }
+  const files = (await $.fs.list(dir))
+    .filter(entry => entry.kind === 'file' && entry.name.endsWith('.md'))
+    .sort((a, b) => a.name.localeCompare(b.name))
+  const kept = files.slice(0, SHELF_MAX)
+  const notes = await Promise.all(kept.map(async entry => parseNote(entry.name, await $.fs.read(`${dir}/${entry.name}`))))
+
+  return { notes: sortNotes(shelf, notes), isTruncated: files.length > kept.length }
+}
+
+const notePath = (vault: string, shelf: Shelf, file: string) => `${vault}/${SHELVES[shelf].folder}/${file}`
+
+const INCUBATE_COMMAND: CommandSpec = {
+  name: 'incubate',
+  description: 'Browse vault ideas and reading, and decide what to do with them',
+  argumentHint: '[idea title]',
+}
+
 export const register: Register = (on, options) => {
   const config = readConfig(options)
 
@@ -119,15 +186,19 @@ export const register: Register = (on, options) => {
     await $.command.register({
       name: 'jot',
       description: 'Capture a thought into the vault inbox',
-      argumentHint: `[${KINDS.join('|')}:] <text>`,
+      argumentHint: `[${KINDS.join('|')}:] <text>, or nothing to draft one`,
       immediate: true,
     })
+    await $.command.register(INCUBATE_COMMAND)
     await refresh($, config)
 
     return next(e)
   })
 
   on('command.run', { command: 'jot' }, async ($, e) => {
+    if (e.args.trim() === '') {
+      return draft($)
+    }
     const jot = parseJot(e.args)
     if (jot === null) {
       return { text: USAGE }
@@ -142,10 +213,12 @@ export const register: Register = (on, options) => {
     }
   })
 
-  // Ingest may run in any session, so recount after each main-agent turn.
+  // Ingest may run in any session, so recount after each main-agent turn;
+  // Claude may also have edited notes the incubate pane shows.
   on('turn.complete', async ($, e, next) => {
     if (e.agentId === undefined) {
       await refresh($, config)
+      $.ui.invalidate('ui.render')
     }
 
     return next(e)
@@ -179,6 +252,184 @@ export const register: Register = (on, options) => {
         <Button key="ingest" label="Ingest" variant="primary" onPress={fillIngest} />
         <Text> </Text>
         <Button key="hide" label="Hide" onPress={() => update($, isHidden, () => true)} />
+      </Box>
+    )
+  })
+
+  // The incubate pane: shelves → notes → one note, with decisions handed to Claude.
+  on('command.run', { command: 'incubate' }, async ($, e) => {
+    try {
+      const { vault } = await resolveVault($, config)
+      const query = e.args.trim()
+      let next: View = HOME
+      let text = 'vault-jot: incubate pane opened.'
+      if (query !== '') {
+        const found = findNote((await loadShelf($, vault, 'ideas')).notes, query)
+        if (found === undefined || found === 'ambiguous') {
+          next = { layer: 'list', shelf: 'ideas' }
+          text =
+            found === undefined
+              ? `vault-jot: no idea matches "${query}"; showing all ideas.`
+              : `vault-jot: several ideas match "${query}"; pick one.`
+        } else {
+          next = { layer: 'detail', shelf: 'ideas', file: found.file }
+        }
+      }
+      await update($, view, () => next)
+      const opened = await $.ui.open({ id: PANE, title: 'Incubate', focus: true })
+
+      return { text: opened.isPlaced ? text : `${text} The pane is waiting: ${opened.reason}` }
+    } catch (error) {
+      return { text: `vault-jot: ${describe(error)}` }
+    }
+  })
+
+  on('ui.render', { component: 'Pane', requestId: PANE }, async ($, e) => {
+    const { Box, Button, Text } = $.ui.resolve(e)
+    let vault: string
+    try {
+      vault = (await resolveVault($, config)).vault
+    } catch (error) {
+      return <Text color="red">vault-jot: {describe(error)}</Text>
+    }
+    const current = await read($, view)
+    const go = (to: View) => () => update($, view, () => to)
+    const send = (text: string, what: string) => async () => {
+      await $.prompt.submit({ text })
+      $.ui.toast(`vault-jot: asked Claude to ${what}`)
+    }
+
+    if (current.layer === 'home') {
+      const [ideas, reading] = await Promise.all([loadShelf($, vault, 'ideas'), loadShelf($, vault, 'reading')])
+
+      return (
+        <Box flexDirection="column">
+          <Text dimColor>Pick a shelf.</Text>
+          <Box>
+            <Button key="ideas" hotkey="i" label={`${SHELVES.ideas.icon} Ideas ${ideas.notes.length}`} onPress={go({ layer: 'list', shelf: 'ideas' })} />
+            <Text> </Text>
+            <Button key="reading" hotkey="r" label={`${SHELVES.reading.icon} Reading ${reading.notes.length}`} onPress={go({ layer: 'list', shelf: 'reading' })} />
+          </Box>
+        </Box>
+      )
+    }
+
+    const shelf = SHELVES[current.shelf]
+    const { notes, isTruncated } = await loadShelf($, vault, current.shelf)
+
+    if (current.layer === 'list') {
+      return (
+        <Box flexDirection="column">
+          <Box>
+            <Button key="back" hotkey="b" plain label="‹ Shelves" onPress={go(HOME)} />
+            <Text bold> {shelf.label}</Text>
+          </Box>
+          {notes.length === 0 && (
+            <Text dimColor>
+              Nothing here yet. Captures of kind {current.shelf === 'ideas' ? 'idea' : 'read'} land here after ingest.
+            </Text>
+          )}
+          {notes.map(note => (
+            <Button
+              key={`note:${note.file}`}
+              plain
+              label={`${shelf.icon} ${titleOf(note)} · ${stateOf(current.shelf, note)}`}
+              onPress={go({ layer: 'detail', shelf: current.shelf, file: note.file })}
+            />
+          ))}
+          {isTruncated && <Text dimColor>Showing the first {SHELF_MAX} notes.</Text>}
+        </Box>
+      )
+    }
+
+    const note = notes.find(candidate => candidate.file === current.file)
+    const back = <Button key="back" hotkey="b" plain label={`‹ ${shelf.label}`} onPress={go({ layer: 'list', shelf: current.shelf })} />
+    if (note === undefined) {
+      return (
+        <Box flexDirection="column">
+          {back}
+          <Text dimColor>{current.file} is no longer in {shelf.folder}.</Text>
+        </Box>
+      )
+    }
+    const path = notePath(vault, current.shelf, note.file)
+    const header = (
+      <Box>
+        {back}
+        <Text bold> {titleOf(note)}</Text>
+        <Text dimColor> · {stateOf(current.shelf, note)}</Text>
+      </Box>
+    )
+
+    if (current.shelf === 'reading') {
+      const mark = (state: ReadingState, label: string, hotkey: string) => (
+        <Button key={`mark:${state}`} hotkey={hotkey} label={label} onPress={send(readingPrompt(vault, path, state), `mark it ${state}`)} />
+      )
+
+      return (
+        <Box flexDirection="column">
+          {header}
+          {note.props.url && <Text dimColor>{note.props.url}</Text>}
+          <Box>
+            {mark('reading', 'Reading', 'r')}
+            <Text> </Text>
+            {mark('done', 'Done', 'd')}
+            <Text> </Text>
+            {mark('dropped', 'Drop', 'x')}
+          </Box>
+        </Box>
+      )
+    }
+
+    const questions = note.sections['Open Questions'] ?? []
+    const options = note.sections['Options'] ?? []
+    const repo = await $.session.repo()
+    const exportRoot = repo !== null && repo.root !== vault ? repo.root : undefined
+    const decide = (decision: string) => send(decisionPrompt(vault, path, decision), 'record the decision')()
+    // Mobile has no Input; there the options' Choose buttons still decide.
+    let decisionInput = null
+    if (e.surface !== 'mobile') {
+      const { Input } = $.ui.resolve(e)
+      decisionInput = (
+        <Input
+          key="decision"
+          label="Decision"
+          placeholder="type a decision, Enter sends it to Claude"
+          onSubmit={value => {
+            if (value.trim() !== '') {
+              void decide(value.trim())
+            }
+          }}
+        />
+      )
+    }
+
+    return (
+      <Box flexDirection="column">
+        {header}
+        <Text bold>Open questions</Text>
+        {questions.length === 0 ? <Text dimColor> none yet; Expand drafts some</Text> : questions.map(question => <Text>  • {question}</Text>)}
+        <Text bold>Options</Text>
+        {options.length === 0 && <Text dimColor> none yet; Expand drafts some</Text>}
+        {options.map((option, index) => (
+          <Box>
+            <Button key={`choose:${index}`} hotkey={index < 9 ? String(index + 1) : undefined} plain label="Choose" onPress={() => decide(`Chose: ${option}`)} />
+            <Text> {option}</Text>
+          </Box>
+        ))}
+        {decisionInput}
+        <Box>
+          <Button key="expand" hotkey="e" label="Expand" onPress={send(expandPrompt(vault, path), 'expand the idea')} />
+          {exportRoot !== undefined && <Text> </Text>}
+          {exportRoot !== undefined && (
+            <Button
+              key="export"
+              hotkey="x"
+              label={`Export to ${exportRoot.split('/').at(-1)}`}
+              onPress={send(exportPrompt(vault, path, exportRoot), 'export it as a design doc')}
+            />
+          )}
+        </Box>
       </Box>
     )
   })

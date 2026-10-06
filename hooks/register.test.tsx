@@ -12,11 +12,22 @@ type File = { text: string; mtimeMs: number }
 
 // The world beneath the plugin: a vault on a fake disk, a session in a repo,
 // and the status line and prompt box it writes to.
-function world(on: On, opts: { dirs?: string[]; files?: Record<string, File>; branchFails?: boolean } = {}) {
+type WorldOptions = {
+  dirs?: string[]
+  files?: Record<string, File>
+  branchFails?: boolean
+  repoRoot?: string
+  forkReply?: string | null
+  isFillRefused?: boolean
+}
+
+function world(on: On, opts: WorldOptions = {}) {
   const dirs = new Set(opts.dirs ?? [INBOX])
   const files = new Map(Object.entries(opts.files ?? {}))
   const statuses: (string | undefined)[] = []
   const fills: string[] = []
+  const submits: string[] = []
+  const opened: string[] = []
   const dirOf = (path: string) => path.slice(0, path.lastIndexOf('/'))
 
   mock.env(on, { HOME: '/Users/me' })
@@ -52,9 +63,35 @@ function world(on: On, opts: { dirs?: string[]; files?: Record<string, File>; br
   }))
   on('session.cwd', async () => ({ value: '/work/app' }))
   on('session.id', async () => ({ value: 'session-1' }))
+  on('fs.read', async (_$, e) => {
+    const file = files.get(e.path)
+
+    return file === undefined ? { deny: `ENOENT: ${e.path}` } : { value: file.text }
+  })
   on('session.repo', async () => ({
-    value: { root: '/work/app', remote: 'git@github.com:me/app.git', internal: false, name: null },
+    value: { root: opts.repoRoot ?? '/work/app', remote: 'git@github.com:me/app.git', internal: false, name: null },
   }))
+  on('model.fork', async () => {
+    const usage = { input_tokens: 1, output_tokens: 1, cache_creation_input_tokens: 0, cache_read_input_tokens: 0 }
+
+    return {
+      value:
+        opts.forkReply === null
+          ? { isAnswered: false as const, reason: 'nothing-to-fork' as const }
+          : { isAnswered: true as const, text: opts.forkReply ?? 'idea: a drafted thought', usage },
+    }
+  })
+  on('ui.open', async (_$, e) => {
+    opened.push(e.id)
+
+    return { value: { isPlaced: true as const } }
+  })
+  on('ui.toast', async () => ({ value: undefined }))
+  on('prompt.submit', async (_$, e) => {
+    submits.push(e.text)
+
+    return { text: e.text }
+  })
   on('process.run', async () =>
     opts.branchFails
       ? { deny: 'processes are not available here' }
@@ -71,10 +108,10 @@ function world(on: On, opts: { dirs?: string[]; files?: Record<string, File>; br
   on('prompt.fill', async (_$, e) => {
     fills.push(e.text)
 
-    return { isFilled: true }
+    return opts.isFillRefused ? { isFilled: false } : { isFilled: true }
   })
 
-  return { files, statuses, fills }
+  return { files, statuses, fills, submits, opened }
 }
 
 // `/jot <args>` as the person types it at the prompt.
@@ -246,5 +283,146 @@ describe('backlog band', () => {
     const ui = await $.ui.mount({ plugin: 'vault-jot', surface: 'terminal', component: 'AbovePrompt', props: PROPS })
 
     expect(await ui.find({ key: 'ingest' })).toBe(undefined)
+  })
+})
+
+describe('/jot with no text (M2)', () => {
+  test('drafts a capture into the prompt and saves nothing', { options: { vaultPath: '/vault' } }, async ($, on) => {
+    const { files, fills } = world(on, { forkReply: '`pitfall: fs.write creates parent dirs; stat first`' })
+
+    const ran = await $.command.run(jot(''))
+
+    expect(fills).toEqual(['/jot pitfall: fs.write creates parent dirs; stat first'])
+    expect(ran.text).toMatch(/draft is in your prompt/)
+    expect(files.size).toBe(0)
+  })
+
+  test('says so when there is no conversation to draft from', { options: { vaultPath: '/vault' } }, async ($, on) => {
+    const { fills } = world(on, { forkReply: null })
+
+    const ran = await $.command.run(jot('  '))
+
+    expect(ran.text).toMatch(/^vault-jot: nothing to draft from yet\. Usage: \/jot/)
+    expect(fills).toEqual([])
+  })
+
+  test('keeps the draft visible when the prompt box refuses it', { options: { vaultPath: '/vault' } }, async ($, on) => {
+    world(on, { forkReply: 'til: x', isFillRefused: true })
+
+    const ran = await $.command.run(jot(''))
+
+    expect(ran.text).toBe('vault-jot: could not fill the prompt (refused). Draft: /jot til: x')
+  })
+})
+
+describe('/incubate (M3)', () => {
+  const IDEAS = '/vault/wiki/ideas'
+  const READING = '/vault/wiki/reading'
+  const idea = `---\ntitle: "Replay Mode"\nstatus: developing\n---\n\n## Open Questions\n\n- Which week?\n\n## Options\n\n- Replay everything\n- Replay verdicts only\n`
+  const shelves = {
+    dirs: [INBOX, IDEAS, READING],
+    files: {
+      [`${IDEAS}/Replay Mode.md`]: { text: idea, mtimeMs: NOW },
+      [`${IDEAS}/Band Snooze.md`]: { text: '---\nstatus: seed\n---\n', mtimeMs: NOW },
+      [`${READING}/Hooks Post.md`]: { text: '---\nurl: "https://example.com/hooks"\n---\n', mtimeMs: NOW },
+    },
+  }
+  const PANE_PROPS = {
+    title: 'Incubate',
+    isFocused: true,
+    bodyColumns: 80,
+    placement: 'dock' as const,
+    scroll: { offset: 0, bodyRows: 30 },
+    view: {},
+  }
+  const pane = ($: Engine, surface: 'terminal' | 'desktop' = 'terminal') =>
+    $.ui.mount({ plugin: 'vault-jot', surface, component: 'Pane', requestId: 'incubate', props: PANE_PROPS })
+
+  for (const surface of ['terminal', 'desktop'] as const) {
+    test(`navigates shelves → notes → note and back (${surface})`, { options: { vaultPath: '/vault' } }, async ($, on) => {
+      const { opened } = world(on, shelves)
+
+      const ran = await $.command.run({ ...jot(''), command: 'incubate' })
+      expect(ran.text).toBe('vault-jot: incubate pane opened.')
+      expect(opened).toEqual(['incubate'])
+
+      const ui = await pane($, surface)
+      expect((await ui.find({ key: 'ideas' }))?.text).toBe('🌱 Ideas 2')
+      expect((await ui.find({ key: 'reading' }))?.text).toBe('📖 Reading 1')
+
+      await ui.press({ key: 'ideas' })
+      expect((await ui.findAll({ type: 'Button' })).map(button => button.text)).toEqual([
+        '‹ Shelves',
+        '🌱 Replay Mode · developing',
+        '🌱 Band Snooze · seed',
+      ])
+
+      await ui.press({ key: 'note:Replay Mode.md' })
+      expect(await ui.find({ text: 'Which week?' })).not.toBe(undefined)
+
+      await ui.press({ key: 'back' })
+      await ui.press({ key: 'back' })
+      expect(await ui.find({ key: 'ideas' })).not.toBe(undefined)
+    })
+  }
+
+  test('opens an idea by title and hands decisions to Claude', { options: { vaultPath: '/vault' } }, async ($, on) => {
+    const { submits } = world(on, shelves)
+    await $.command.run({ ...jot('replay mode'), command: 'incubate' })
+    const ui = await pane($)
+
+    await ui.press({ key: 'choose:1' })
+    await ui.input({ key: 'decision', text: 'Ship verdict replay first' })
+    await ui.press({ key: 'expand' })
+    await ui.press({ key: 'export' })
+
+    const note = `${IDEAS}/Replay Mode.md`
+    expect(submits).toHaveLength(4)
+    expect(submits[0]).toContain(`Record a decision on the idea note ${note}: "Chose: Replay verdicts only".`)
+    expect(submits[1]).toContain(`Record a decision on the idea note ${note}: "Ship verdict replay first".`)
+    expect(submits[2]).toContain(`Incubate the idea note ${note}.`)
+    expect(submits[3]).toContain(`into a design doc at /work/app/docs/design/`)
+  })
+
+  test('offers no export from inside the vault itself', { options: { vaultPath: '/vault' } }, async ($, on) => {
+    world(on, { ...shelves, repoRoot: '/vault' })
+    await $.command.run({ ...jot('Replay Mode'), command: 'incubate' })
+
+    const ui = await pane($)
+
+    expect(await ui.find({ key: 'expand' })).not.toBe(undefined)
+    expect(await ui.find({ key: 'export' })).toBe(undefined)
+  })
+
+  test('marks a reading item through Claude', { options: { vaultPath: '/vault' } }, async ($, on) => {
+    const { submits } = world(on, shelves)
+    await $.command.run({ ...jot(''), command: 'incubate' })
+    const ui = await pane($)
+
+    await ui.press({ key: 'reading' })
+    await ui.press({ key: 'note:Hooks Post.md' })
+    expect(await ui.find({ text: 'https://example.com/hooks' })).not.toBe(undefined)
+    await ui.press({ key: 'mark:done' })
+
+    expect(submits[0]).toContain(`Set reading_state: done on the reading note ${READING}/Hooks Post.md.`)
+  })
+
+  test('falls back to the idea list when the title matches nothing', { options: { vaultPath: '/vault' } }, async ($, on) => {
+    world(on, shelves)
+
+    const ran = await $.command.run({ ...jot('nonexistent'), command: 'incubate' })
+
+    expect(ran.text).toBe('vault-jot: no idea matches "nonexistent"; showing all ideas.')
+    expect(await (await pane($)).find({ key: 'note:Band Snooze.md' })).not.toBe(undefined)
+  })
+
+  test('shows empty shelves when nothing has been ingested yet', { options: { vaultPath: '/vault' } }, async ($, on) => {
+    world(on)
+    await $.command.run({ ...jot(''), command: 'incubate' })
+    const ui = await pane($)
+
+    expect((await ui.find({ key: 'ideas' }))?.text).toBe('🌱 Ideas 0')
+    await ui.press({ key: 'ideas' })
+    expect(await ui.find({ text: /Nothing here yet/ })).not.toBe(undefined)
   })
 })

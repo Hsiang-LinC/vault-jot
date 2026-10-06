@@ -22,9 +22,9 @@ Useful thoughts surface mid-session: a lesson from building an app, a take on a 
 |---|---|---|---|
 | 1 ✅ | `/jot <text>` with optional kind prefix (`idea:`, `read:`, `plugin:`, `til:`, `pitfall:`) writes a timestamped inbox file with provenance | slash command, `$.fs` | M1 |
 | 3 ✅ | Inbox backlog as a prompt-footer label (`📥 inbox 4 · 9d`); band with an ingest button past a threshold | `SessionMode` label, `AbovePrompt` band, `$.clock` | M1 |
-| 2 | `/jot` with no text drafts a note from the last exchange for review | `$.model` | M2 |
-| 5 | `/incubate <idea>` grows a seed into a design-doc skeleton; `--export <repo>` copies it into a project's `docs/` | slash command, `$.model`, `$.fs` | M3 |
-| 4 | Ideas pane: browse seeds and the reading list, open / promote / mark read / drop | pane, `ui.render` | M3 |
+| 2 ✅ | `/jot` with no text drafts a capture from the conversation into the prompt for review | `$.model.fork`, `$.prompt.fill` | M2 |
+| 5 ✅ | `/incubate [idea]`: decide on an idea (choose an option or type a decision), expand it, or export it as a design doc to the session's repo | pane, `$.prompt.submit` hand-off | M3 |
+| 4 ✅ | Same pane: shelves → notes → note navigation over ideas and the reading list; mark reading items reading / done / dropped | pane, `ui.render` | M3 |
 | 6 | Suggest-only "worth noting?" toasts after a fail→fix sequence or a plugin install | `tool.call`, `$.ui.toast` | Later, if not noisy |
 
 ## Configuration
@@ -40,7 +40,15 @@ Useful thoughts surface mid-session: a lesson from building an app, a take on a 
 - The backlog is a `SessionMode` footer label, not `$.ui.status`: the engine prefixes every pinned status with a `!` notice marker the API cannot change, which reads as an error. The status line carries only real problems (vault unset or unreadable).
 - Band "Hide" lasts for the session only, so a stale inbox nudges again next session. "Ingest" fills the prompt instead of submitting, so the person reviews it.
 
+## Decisions (M2, M3)
+
+- The mod never writes under `wiki/`. Decisions, expansions, exports and reading-state changes are prompts to Claude (`hooks/handoff.ts`), which edits through claude-obsidian; the pane only reads notes. Cost: each change is a Claude turn.
+- The `/jot` draft is filled into the prompt, not saved: the person accepts or edits it with Enter.
+- `/incubate` is one pane navigated in layers (shelves → notes → note) rather than separate commands; it re-reads notes on each draw (at most 200 per shelf) and redraws after each turn, so it shows what Claude last wrote.
+- Export targets the session's repo (`$.session.repo()`), shown only when that is not the vault, instead of a typed path.
+- Engine constraints that shape the code: one `session.start` hook per plugin, and `$` is followed only into functions declared in the hooks module, so all shell code lives in `register.tsx` and the other modules stay pure.
+
 ## Open questions
 
 - Resolved 2026-10-06: the vault is a personal knowledge base; `idea` and `reading` types with lifecycles now exist (`wiki/ideas/`, `wiki/reading/`).
-- Ownership of "promote" in the ideas pane: should it invoke `wiki-ingest`, or only queue the item?
+- Resolved 2026-10-06: pane actions hand off to Claude; the mod is never a second writer under `wiki/`.
