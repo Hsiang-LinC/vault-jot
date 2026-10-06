@@ -3,13 +3,13 @@ import type { EngineInterface, PluginOptions, Register } from 'claude-code'
 
 import {
   KINDS,
+  backlogLabel,
   expandHome,
   fileName,
   isOverdue,
   localStamp,
   parseJot,
   renderNote,
-  statusText,
   summarizeInbox,
 } from './core'
 import type { Jot, Thresholds } from './core'
@@ -97,12 +97,14 @@ async function capture($: EngineInterface, config: Config, jot: Jot): Promise<st
   return path.slice(inbox.length + 1)
 }
 
+// The backlog shows as a prompt-footer label (see the SessionMode hook); the
+// status line is kept for problems, which the engine marks as notices.
 async function refresh($: EngineInterface, config: Config) {
   try {
     const { inbox } = await resolveVault($, config)
     const files = (await $.fs.list(inbox)).filter(entry => entry.kind === 'file')
     const next = summarizeInbox(files, await $.clock.now())
-    $.ui.status(statusText(next))
+    $.ui.status(undefined)
     await update($, backlog, () => next)
   } catch (error) {
     $.ui.status(`vault-jot: ${describe(error)}`.slice(0, STATUS_MAX))
@@ -147,6 +149,13 @@ export const register: Register = (on, options) => {
     }
 
     return next(e)
+  })
+
+  on('ui.render', { component: 'SessionMode' }, async ($, e, next) => {
+    const current = await read($, backlog)
+    const label = current === null ? undefined : backlogLabel(current)
+
+    return label === undefined ? next(e) : next({ ...e, props: { ...e.props, modes: [...e.props.modes, label] } })
   })
 
   on('ui.render', { component: 'AbovePrompt' }, async ($, e, next) => {

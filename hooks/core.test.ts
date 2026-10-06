@@ -1,6 +1,7 @@
 import { describe, expect, test } from 'claude-code/testing'
 
 import {
+  backlogLabel,
   expandHome,
   fileName,
   isOverdue,
@@ -8,7 +9,6 @@ import {
   parseJot,
   renderNote,
   slugify,
-  statusText,
   summarizeInbox,
   titleOf,
 } from './core'
@@ -95,12 +95,12 @@ describe('backlog', () => {
       now,
     )
     expect(backlog).toEqual({ count: 2, oldestDays: 9 })
-    expect(statusText(backlog)).toBe('inbox: 2 · oldest 9d')
+    expect(backlogLabel(backlog)).toBe('📥 inbox 2 · 9d')
   })
 
-  test('an empty inbox clears the status and is never overdue', () => {
+  test('an empty inbox has no label and is never overdue', () => {
     const empty = summarizeInbox([{ name: '.gitkeep', mtimeMs: 0 }], now)
-    expect(statusText(empty)).toBe(undefined)
+    expect(backlogLabel(empty)).toBe(undefined)
     expect(isOverdue(empty, { count: 0, days: 0 })).toBe(false)
   })
 

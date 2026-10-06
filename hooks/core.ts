@@ -111,12 +111,13 @@ export function summarizeInbox(entries: readonly InboxEntry[], nowMs: number): B
   return { count: captures.length, oldestDays: Math.max(0, Math.floor((nowMs - oldest) / DAY_MS)) }
 }
 
-export function statusText(backlog: Backlog): string | undefined {
+// The prompt-footer label; undefined for an empty inbox so nothing shows.
+export function backlogLabel(backlog: Backlog): string | undefined {
   if (backlog.count === 0) {
     return undefined
   }
 
-  return `inbox: ${backlog.count} · oldest ${backlog.oldestDays}d`
+  return `📥 inbox ${backlog.count} · ${backlog.oldestDays}d`
 }
 
 export function isOverdue(backlog: Backlog, thresholds: Thresholds): boolean {

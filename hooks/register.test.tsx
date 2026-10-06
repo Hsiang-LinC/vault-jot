@@ -1,5 +1,6 @@
 import { describe, expect, mock, test } from 'claude-code/testing'
 import type { On } from 'claude-code'
+import type { Engine } from 'claude-code/testing'
 
 import { fileName, localStamp } from './core'
 
@@ -84,6 +85,21 @@ const jot = (args: string) => ({
   presentation: { isFullscreen: false, columns: 100 },
 })
 
+// The engine's own footer: the mode labels joined, as the terminal draws them.
+function engineFooter(on: On) {
+  on('ui.render', { component: 'SessionMode' }, async ($, e) => {
+    const { Text } = $.ui.resolve(e)
+
+    return <Text>{e.props.modes.join(' & ')}</Text>
+  })
+}
+
+const footerOf = async ($: Engine, surface: 'terminal' | 'desktop' = 'terminal') => {
+  const ui = await $.ui.mount({ plugin: 'vault-jot', surface, component: 'SessionMode', props: { modes: ['focus'] } })
+
+  return ui.drawn()
+}
+
 const captures = (files: Map<string, File>) => [...files.keys()].filter(path => path.startsWith(`${INBOX}/jot-`))
 
 describe('/jot', () => {
@@ -97,7 +113,7 @@ describe('/jot', () => {
     const text = files.get(path ?? '')?.text ?? ''
     expect(text).toContain('title: "A vault mod"\nkind: idea\n')
     expect(text).toContain('origin_cwd: "/work/app"\norigin_repo: "git@github.com:me/app.git"\norigin_branch: "feature/jot"\norigin_session: "session-1"\n---\n\nA vault mod\n')
-    expect(statuses.at(-1)).toBe('inbox: 1 · oldest 0d')
+    expect(statuses.at(-1)).toBe(undefined)
   })
 
   test('expands ~ in vaultPath', { options: { vaultPath: '~/notes/' } }, async ($, on) => {
@@ -158,6 +174,29 @@ describe('/jot', () => {
   })
 })
 
+describe('backlog footer', () => {
+  for (const surface of ['terminal', 'desktop'] as const) {
+    test(`labels the footer with the backlog (${surface})`, { options: { vaultPath: '/vault' } }, async ($, on) => {
+      world(on)
+      engineFooter(on)
+
+      expect(await footerOf($, surface)).toMatchObject({ children: ['focus'] })
+      await $.command.run(jot('idea: one'))
+      expect(await footerOf($, surface)).toMatchObject({ children: ['focus & 📥 inbox 1 · 0d'] })
+    })
+  }
+
+  test('reports a misconfigured vault on the status line, not the footer', async ($, on) => {
+    const { statuses } = world(on)
+    engineFooter(on)
+
+    await $.session.start({ cwd: '/work/app', surface: 'terminal', isInteractive: true })
+
+    expect(statuses).toEqual(['vault-jot: vaultPath is not set; set it in /config under vault-jot'.slice(0, 80)])
+    expect(await footerOf($)).toMatchObject({ children: ['focus'] })
+  })
+})
+
 describe('backlog band', () => {
   const PROPS = {
     hasSurvey: false,
@@ -181,7 +220,7 @@ describe('backlog band', () => {
         return <Text key="engine">engine</Text>
       })
       await $.session.start({ cwd: '/work/app', surface, isInteractive: true })
-      expect(statuses.at(-1)).toBe('inbox: 2 · oldest 8d')
+      expect(statuses).toEqual([undefined])
 
       const ui = await $.ui.mount({ plugin: 'vault-jot', surface, component: 'AbovePrompt', props: PROPS })
       expect((await ui.find({ key: 'ingest' }))?.text).toBe('Ingest')

@@ -21,7 +21,7 @@ Useful thoughts surface mid-session: a lesson from building an app, a take on a 
 | # | Feature | Mechanism | Milestone |
 |---|---|---|---|
 | 1 ✅ | `/jot <text>` with optional kind prefix (`idea:`, `read:`, `plugin:`, `til:`, `pitfall:`) writes a timestamped inbox file with provenance | slash command, `$.fs` | M1 |
-| 3 ✅ | Inbox backlog in the status line (`inbox: 4 · oldest 9d`); band with an ingest button past a threshold | `$.ui.status`, `AbovePrompt` band, `$.clock` | M1 |
+| 3 ✅ | Inbox backlog as a prompt-footer label (`📥 inbox 4 · 9d`); band with an ingest button past a threshold | `SessionMode` label, `AbovePrompt` band, `$.clock` | M1 |
 | 2 | `/jot` with no text drafts a note from the last exchange for review | `$.model` | M2 |
 | 5 | `/incubate <idea>` grows a seed into a design-doc skeleton; `--export <repo>` copies it into a project's `docs/` | slash command, `$.model`, `$.fs` | M3 |
 | 4 | Ideas pane: browse seeds and the reading list, open / promote / mark read / drop | pane, `ui.render` | M3 |
@@ -37,6 +37,7 @@ Useful thoughts surface mid-session: a lesson from building an app, a take on a 
 - Capture format: `inbox/jot-<YYYYMMDD-HHMMSS>-<kind>-<slug>.md`, local time; flat frontmatter `title`, `kind`, `captured` (ISO with offset), `origin_cwd`, `origin_repo`, `origin_branch`, `origin_session`. Unknown origin fields are omitted, not faked. Same-second name clashes get a `-2`…`-5` suffix; never overwrite.
 - Kinds (`idea`, `read`, `til`, `pitfall`, `plugin`, `note`) mirror the vault's Vault Guide "Capture Kinds" table, which owns how ingest files each kind.
 - Backlog is recounted at session start, after each `/jot`, and after each main-agent turn (one directory listing); no timer.
+- The backlog is a `SessionMode` footer label, not `$.ui.status`: the engine prefixes every pinned status with a `!` notice marker the API cannot change, which reads as an error. The status line carries only real problems (vault unset or unreadable).
 - Band "Hide" lasts for the session only, so a stale inbox nudges again next session. "Ingest" fills the prompt instead of submitting, so the person reviews it.
 
 ## Open questions
