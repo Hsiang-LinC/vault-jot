@@ -6,6 +6,15 @@ Design and roadmap: [docs/design.md](docs/design.md).
 
 ## Use
 
+Most of the time, just write the thought:
+
+```text
+/jot Obsidian Bases can group by any property
+/jot https://example.com/long-post — recommended in the hooks thread
+```
+
+With no kind it is saved as `note`, and ingest decides what it becomes (idea, concept, pitfall, reading, ...) from the text and its origin. Prefix a kind when you already know, or when it needs a target:
+
 ```text
 /jot idea: a mod that turns jots into design docs
 /jot improve @cx: make the panel smaller and navigable by layer
@@ -13,7 +22,6 @@ Design and roadmap: [docs/design.md](docs/design.md).
 /jot til: Obsidian Bases can group by any property
 /jot pitfall: fs.write creates missing parent directories
 /jot plugin: claude-obsidian — lint is fast, the router ignores custom types
-/jot just a loose thought
 ```
 
 Each capture becomes `inbox/jot-<YYYYMMDD-HHMMSS>-<kind>-<slug>.md` in the vault, with flat frontmatter: `title`, `kind`, `captured`, and the origin (`origin_cwd`, `origin_repo`, `origin_branch`, `origin_session`). `/jot` runs immediately, even mid-turn. Kinds and how ingest files them are defined in the vault's Vault Guide ("Capture Kinds").
