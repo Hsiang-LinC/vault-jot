@@ -23,6 +23,8 @@ import type { Note } from './notes'
 const backlog = atom({ plugin: 'vault-jot', key: 'backlog' } as const, null)
 const isHidden = atom({ plugin: 'vault-jot', key: 'isHidden' } as const, false)
 
+// Command output carries no "vault-jot:" prefix: Claude Code already labels
+// a plugin command's output with the plugin's name.
 const USAGE = `Usage: /jot [${KINDS.join('|')}:] <text>`
 const MAX_NAME_ATTEMPTS = 5
 const GIT_TIMEOUT_MS = 3000
@@ -114,21 +116,21 @@ async function draft($: EngineInterface): Promise<CommandRunResult> {
     return {
       text:
         reply.reason === 'nothing-to-fork'
-          ? `vault-jot: nothing to draft from yet. ${USAGE}`
-          : `vault-jot: could not draft a capture (${reply.reason}). ${USAGE}`,
+          ? `nothing to draft from yet. ${USAGE}`
+          : `could not draft a capture (${reply.reason}). ${USAGE}`,
     }
   }
   const jot = parseDraft(reply.text)
   if (jot === null) {
-    return { text: `vault-jot: the draft came back empty. ${USAGE}` }
+    return { text: `the draft came back empty. ${USAGE}` }
   }
   const command = draftCommand(jot)
   const filled = await $.prompt.fill({ text: command })
   if (!filled.isFilled) {
-    return { text: `vault-jot: could not fill the prompt (${filled.refusal ?? 'refused'}). Draft: ${command}` }
+    return { text: `could not fill the prompt (${filled.refusal ?? 'refused'}). Draft: ${command}` }
   }
 
-  return { text: 'vault-jot: draft is in your prompt. Edit it and press Enter to save, or clear it.' }
+  return { text: 'draft is in your prompt. Edit it and press Enter to save, or clear it.' }
 }
 
 async function refresh($: EngineInterface, config: Config) {
@@ -209,7 +211,7 @@ export const register: Register = (on, options) => {
 
       return { text: `Jotted ${jot.kind} → inbox/${name}` }
     } catch (error) {
-      return { text: `vault-jot: not saved: ${describe(error)}` }
+      return { text: `not saved: ${describe(error)}` }
     }
   })
 
@@ -262,15 +264,15 @@ export const register: Register = (on, options) => {
       const { vault } = await resolveVault($, config)
       const query = e.args.trim()
       let next: View = HOME
-      let text = 'vault-jot: incubate pane opened.'
+      let text = 'incubate pane opened.'
       if (query !== '') {
         const found = findNote((await loadShelf($, vault, 'ideas')).notes, query)
         if (found === undefined || found === 'ambiguous') {
           next = { layer: 'list', shelf: 'ideas' }
           text =
             found === undefined
-              ? `vault-jot: no idea matches "${query}"; showing all ideas.`
-              : `vault-jot: several ideas match "${query}"; pick one.`
+              ? `no idea matches "${query}"; showing all ideas.`
+              : `several ideas match "${query}"; pick one.`
         } else {
           next = { layer: 'detail', shelf: 'ideas', file: found.file }
         }
@@ -280,7 +282,7 @@ export const register: Register = (on, options) => {
 
       return { text: opened.isPlaced ? text : `${text} The pane is waiting: ${opened.reason}` }
     } catch (error) {
-      return { text: `vault-jot: ${describe(error)}` }
+      return { text: `cannot open incubate: ${describe(error)}` }
     }
   })
 

@@ -140,6 +140,16 @@ const footerOf = async ($: Engine, surface: 'terminal' | 'desktop' = 'terminal')
 const captures = (files: Map<string, File>) => [...files.keys()].filter(path => path.startsWith(`${INBOX}/jot-`))
 
 describe('/jot', () => {
+  // Claude Code labels a plugin command's output with the plugin's name, so
+  // the text must not repeat it.
+  test('command output never repeats the plugin name', { options: { vaultPath: '/vault' } }, async ($, on) => {
+    world(on)
+
+    for (const ran of [await $.command.run(jot('til: x')), await $.command.run({ ...jot(''), command: 'incubate' })]) {
+      expect(ran.text).not.toMatch(/^vault-jot/)
+    }
+  })
+
   test('writes a capture with its kind and provenance, then updates the status', { options: { vaultPath: '/vault' } }, async ($, on) => {
     const { files, statuses } = world(on)
 
@@ -196,7 +206,7 @@ describe('/jot', () => {
 
     const ran = await $.command.run(jot('lost thought'))
 
-    expect(ran.text).toBe('vault-jot: not saved: vaultPath is not set; set it in /config under vault-jot')
+    expect(ran.text).toBe('not saved: vaultPath is not set; set it in /config under vault-jot')
     expect(files.size).toBe(0)
     expect(statuses).toEqual([])
   })
@@ -206,7 +216,7 @@ describe('/jot', () => {
 
     const ran = await $.command.run(jot('lost thought'))
 
-    expect(ran.text).toMatch(/^vault-jot: not saved: cannot read \/vualt\/inbox: .*ENOENT/)
+    expect(ran.text).toMatch(/^not saved: cannot read \/vualt\/inbox: .*ENOENT/)
     expect(files.size).toBe(0)
   })
 })
@@ -302,7 +312,7 @@ describe('/jot with no text (M2)', () => {
 
     const ran = await $.command.run(jot('  '))
 
-    expect(ran.text).toMatch(/^vault-jot: nothing to draft from yet\. Usage: \/jot/)
+    expect(ran.text).toMatch(/^nothing to draft from yet\. Usage: \/jot/)
     expect(fills).toEqual([])
   })
 
@@ -311,7 +321,7 @@ describe('/jot with no text (M2)', () => {
 
     const ran = await $.command.run(jot(''))
 
-    expect(ran.text).toBe('vault-jot: could not fill the prompt (refused). Draft: /jot til: x')
+    expect(ran.text).toBe('could not fill the prompt (refused). Draft: /jot til: x')
   })
 })
 
@@ -343,7 +353,7 @@ describe('/incubate (M3)', () => {
       const { opened } = world(on, shelves)
 
       const ran = await $.command.run({ ...jot(''), command: 'incubate' })
-      expect(ran.text).toBe('vault-jot: incubate pane opened.')
+      expect(ran.text).toBe('incubate pane opened.')
       expect(opened).toEqual(['incubate'])
 
       const ui = await pane($, surface)
@@ -412,7 +422,7 @@ describe('/incubate (M3)', () => {
 
     const ran = await $.command.run({ ...jot('nonexistent'), command: 'incubate' })
 
-    expect(ran.text).toBe('vault-jot: no idea matches "nonexistent"; showing all ideas.')
+    expect(ran.text).toBe('no idea matches "nonexistent"; showing all ideas.')
     expect(await (await pane($)).find({ key: 'note:Band Snooze.md' })).not.toBe(undefined)
   })
 
