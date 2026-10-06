@@ -22,6 +22,8 @@ Each capture becomes `inbox/jot-<YYYYMMDD-HHMMSS>-<kind>-<slug>.md` in the vault
 
 The prompt footer shows the backlog (`📥 inbox 4 · 9d`), and `🛠 cx 3` when a session runs in a repo that has open ideas targeting it; problems such as an unset or unreadable `vaultPath` go to the status line instead. When the inbox reaches `backlogCount` captures or its oldest is `backlogDays` old, a band above the prompt offers **Ingest** (fills the prompt with an ingest request to review and send) and **Hide** (for this session).
 
+`/jot ingest` does the same on demand, at any backlog size: it fills the prompt with the ingest request for you to review and send. An empty inbox says so and fills nothing. Text that merely starts with the word (`/jot ingest is slow`) is still captured.
+
 ### Draft from the conversation
 
 `/jot` with no text asks a fork of the conversation for the one thing worth keeping, and puts it in your prompt as `/jot <kind>: <draft>`. Edit it and press Enter to save, or clear it. Nothing is saved until you do.

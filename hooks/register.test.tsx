@@ -305,6 +305,46 @@ describe('backlog band', () => {
   })
 })
 
+describe('/jot ingest', () => {
+  const inbox = { [`${INBOX}/jot-a.md`]: { text: 'x', mtimeMs: NOW } }
+
+  test('fills the ingest request below the band thresholds', { options: { vaultPath: '/vault' } }, async ($, on) => {
+    const { fills, submits } = world(on, { files: inbox })
+
+    const ran = await $.command.run(jot(' Ingest '))
+
+    expect(fills).toEqual(['Ingest the captures in /vault/inbox with claude-obsidian wiki-ingest (batch).'])
+    expect(submits).toEqual([])
+    expect(ran.text).toMatch(/ingest request is in your prompt/)
+  })
+
+  test('says so when the inbox is empty', { options: { vaultPath: '/vault' } }, async ($, on) => {
+    const { fills } = world(on)
+
+    const ran = await $.command.run(jot('ingest'))
+
+    expect(ran.text).toBe('inbox is empty; nothing to ingest.')
+    expect(fills).toEqual([])
+  })
+
+  test('keeps the request visible when the prompt box refuses it', { options: { vaultPath: '/vault' } }, async ($, on) => {
+    world(on, { files: inbox, isFillRefused: true })
+
+    const ran = await $.command.run(jot('ingest'))
+
+    expect(ran.text).toMatch(/^could not fill the prompt \(refused\)\. Request: Ingest the captures/)
+  })
+
+  test('still captures text that merely starts with the word', { options: { vaultPath: '/vault' } }, async ($, on) => {
+    const { files, fills } = world(on)
+
+    await $.command.run(jot('ingest is slow today'))
+
+    expect(captures(files)).toHaveLength(1)
+    expect(fills).toEqual([])
+  })
+})
+
 describe('/jot with no text (M2)', () => {
   test('drafts a capture into the prompt and saves nothing', { options: { vaultPath: '/vault' } }, async ($, on) => {
     const { files, fills } = world(on, { forkReply: '`pitfall: fs.write creates parent dirs; stat first`' })

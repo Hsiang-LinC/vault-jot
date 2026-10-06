@@ -15,7 +15,7 @@ import {
   summarizeInbox,
 } from './core'
 import type { Jot, Thresholds } from './core'
-import { DRAFT_PROMPT, HARNESS_INDEX, decisionPrompt, draftCommand, expandPrompt, handoffPrompt, parseDraft, readingPrompt } from './handoff'
+import { DRAFT_PROMPT, HARNESS_INDEX, decisionPrompt, draftCommand, expandPrompt, handoffPrompt, ingestPrompt, parseDraft, readingPrompt } from './handoff'
 import type { ReadingState } from './handoff'
 import { SHELVES, STALE_SEED_DAYS, findNote, openForTarget, parseNote, reviewIdeas, sortNotes, stateOf, targetOf, titleOf } from './notes'
 import type { Note } from './notes'
@@ -26,7 +26,8 @@ const openForRepo = atom({ plugin: 'vault-jot', key: 'openForRepo' } as const, n
 
 // Command output carries no "vault-jot:" prefix: Claude Code already labels
 // a plugin command's output with the plugin's name.
-const USAGE = `Usage: /jot [${KINDS.join('|')}:] <text>`
+const USAGE = `Usage: /jot [${KINDS.join('|')}:] <text>, or /jot ingest`
+const INGEST_WORD = 'ingest'
 const MAX_NAME_ATTEMPTS = 5
 const GIT_TIMEOUT_MS = 3000
 const STATUS_MAX = 80
@@ -134,6 +135,28 @@ async function draft($: EngineInterface): Promise<CommandRunResult> {
   return { text: 'draft is in your prompt. Edit it and press Enter to save, or clear it.' }
 }
 
+// `/jot ingest`: the band's Ingest button on demand, whatever the thresholds.
+// The request goes into the prompt box for review, never straight to Claude.
+async function ingest($: EngineInterface, config: Config): Promise<CommandRunResult> {
+  try {
+    const { inbox } = await resolveVault($, config)
+    const files = (await $.fs.list(inbox)).filter(entry => entry.kind === 'file')
+    if (summarizeInbox(files, await $.clock.now()).count === 0) {
+      return { text: 'inbox is empty; nothing to ingest.' }
+    }
+    const text = ingestPrompt(inbox)
+    const filled = await $.prompt.fill({ text })
+
+    return {
+      text: filled.isFilled
+        ? 'ingest request is in your prompt. Press Enter to run it, or clear it.'
+        : `could not fill the prompt (${filled.refusal ?? 'refused'}). Request: ${text}`,
+    }
+  } catch (error) {
+    return { text: `not started: ${describe(error)}` }
+  }
+}
+
 // The last path segment of the session's repo, which is what an idea's
 // `target` is matched against; null outside a repo and inside the vault.
 async function repoName($: EngineInterface, vault: string): Promise<string | null> {
@@ -201,7 +224,7 @@ export const register: Register = (on, options) => {
     await $.command.register({
       name: 'jot',
       description: 'Capture a thought into the vault inbox',
-      argumentHint: `[${KINDS.join('|')}:] <text>, or nothing to draft one`,
+      argumentHint: `[${KINDS.join('|')}:] <text>, nothing to draft one, or ingest`,
       immediate: true,
     })
     await $.command.register(INCUBATE_COMMAND)
@@ -213,6 +236,9 @@ export const register: Register = (on, options) => {
   on('command.run', { command: 'jot' }, async ($, e) => {
     if (e.args.trim() === '') {
       return draft($)
+    }
+    if (e.args.trim().toLowerCase() === INGEST_WORD) {
+      return ingest($, config)
     }
     const jot = parseJot(e.args)
     if (jot === null) {
@@ -260,7 +286,7 @@ export const register: Register = (on, options) => {
     const { Box, Button, Text } = $.ui.resolve(e)
     const fillIngest = async () => {
       const { inbox } = await resolveVault($, config)
-      await $.prompt.fill({ text: `Ingest the captures in ${inbox} with claude-obsidian wiki-ingest (batch).` })
+      await $.prompt.fill({ text: ingestPrompt(inbox) })
     }
 
     return (

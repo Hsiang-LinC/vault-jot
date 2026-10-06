@@ -10,6 +10,10 @@ const DRAFT_MAX = 500
 const rules = (vault: string) =>
   `Work in the vault at ${vault}: follow its CLAUDE.md and wiki/meta/Vault Guide.md, set \`updated\` to today, and record the change in wiki/log.md.`
 
+// What the inbox band's Ingest button and `/jot ingest` both fill into the prompt.
+export const ingestPrompt = (inbox: string) =>
+  `Ingest the captures in ${inbox} with claude-obsidian wiki-ingest (batch).`
+
 export function expandPrompt(vault: string, notePath: string): string {
   return [
     `Incubate the idea note ${notePath}.`,
