@@ -1,0 +1,14 @@
+{
+  "$schema": "https://anthropic.com/claude-code/marketplace.schema.json",
+  "name": "vault-jot",
+  "description": "vault-jot: capture into an Obsidian vault from any Claude Code session",
+  "owner": { "name": "Hsiang-Lin Chan" },
+  "plugins": [
+    {
+      "name": "vault-jot",
+      "description": "Capture ideas, takes, and reading items into an Obsidian vault inbox, and incubate ideas from a pane",
+      "source": "./",
+      "category": "productivity"
+    }
+  ]
+}

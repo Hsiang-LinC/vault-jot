@@ -1,6 +1,6 @@
 # vault-jot
 
-A Claude Code mod for capturing thoughts into an Obsidian vault without leaving the session you are working in, and for keeping the vault's inbox from going stale.
+A Claude Code plugin for capturing thoughts into an Obsidian vault without leaving the session you are working in, and for keeping the vault's inbox from going stale.
 
 Design and roadmap: [docs/design.md](docs/design.md).
 
@@ -49,13 +49,33 @@ In `/config`, under vault-jot:
 
 The mod never creates `inbox/`: a missing one means a wrong `vaultPath`, and the capture is refused rather than written elsewhere.
 
-## Load
+## Install
+
+The repo is its own plugin marketplace (`.claude-plugin/marketplace.json`).
+
+From GitHub (the repo is private, so git must be able to clone it, e.g. after `gh auth setup-git`):
 
 ```sh
-claude --plugin-dir ~/Developer/personal/vault-jot
+claude plugin marketplace add Hsiang-LinC/vault-jot
+claude plugin install vault-jot@vault-jot
 ```
 
-To load it in every session, add the folder to `CLAUDE_CODE_PLUGIN_DIRS` in the `env` block of `~/.claude/settings.json`.
+From a local clone, read live from the folder (after an edit, run `/reload-plugins`):
+
+```sh
+claude plugin marketplace add ~/Developer/personal/vault-jot
+claude plugin install vault-jot@vault-jot
+```
+
+Then set the vault path, in Claude Code with `/plugin configure vault-jot@vault-jot`, or:
+
+```sh
+echo '{"vaultPath":"~/Developer/personal/notes"}' | claude plugin configure vault-jot@vault-jot --values-stdin
+```
+
+Update a GitHub install with `claude plugin marketplace update vault-jot` then `claude plugin update vault-jot@vault-jot`. Install it one way only: the same plugin also loaded through `--plugin-dir` or a mods folder runs twice.
+
+For a one-off session without installing: `claude --plugin-dir ~/Developer/personal/vault-jot`.
 
 ## Develop
 

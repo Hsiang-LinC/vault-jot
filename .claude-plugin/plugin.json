@@ -1,6 +1,6 @@
 {
   "name": "vault-jot",
-  "version": "0.1.0",
+  "version": "0.2.0",
   "description": "Capture ideas, takes, and reading items into an Obsidian vault inbox from any Claude Code session",
   "author": { "name": "Hsiang-Lin Chan" },
   "types": "./types/index.d.ts",
