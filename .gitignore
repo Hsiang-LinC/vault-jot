@@ -1,0 +1,4 @@
+# Written by the Claude Code engine on every load
+.claude-plugin/types/
+node_modules/
+.DS_Store
