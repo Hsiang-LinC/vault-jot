@@ -25,6 +25,8 @@ Useful thoughts surface mid-session: a lesson from building an app, a take on a 
 | 2 ✅ | `/jot` with no text drafts a capture from the conversation into the prompt for review | `$.model.fork`, `$.prompt.fill` | M2 |
 | 5 ✅ | `/incubate [idea]`: decide on an idea (choose an option or type a decision), expand it, or export it as a design doc to the session's repo | pane, `$.prompt.submit` hand-off | M3 |
 | 4 ✅ | Same pane: shelves → notes → note navigation over ideas and the reading list; mark reading items reading / done / dropped | pane, `ui.render` | M3 |
+| 7 ✅ | `improve @<target>:` captures app feedback; ingested as an `idea` with `target`; `🛠 <repo> N` footer label in a matching repo | `parseJot`, `SessionMode` label | M4 |
+| 8 ✅ | Hand off an idea to its repo through the repo's own harness skills (design doc as fallback); Review layer: open ideas per app, stale seeds | pane, `$.prompt.submit` | M4 |
 | 6 | Suggest-only "worth noting?" toasts after a fail→fix sequence or a plugin install | `tool.call`, `$.ui.toast` | Later, if not noisy |
 
 ## Configuration
@@ -47,6 +49,14 @@ Useful thoughts surface mid-session: a lesson from building an app, a take on a 
 - `/incubate` is one pane navigated in layers (shelves → notes → note) rather than separate commands; it re-reads notes on each draw (at most 200 per shelf) and redraws after each turn, so it shows what Claude last wrote.
 - Export targets the session's repo (`$.session.repo()`), shown only when that is not the vault, instead of a typed path.
 - Engine constraints that shape the code: one `session.start` hook per plugin, and `$` is followed only into functions declared in the hooks module, so all shell code lives in `register.tsx` and the other modules stay pure.
+
+## Decisions (M4)
+
+- App feedback is an `idea` with `target`, not a new note type: it has the same lifecycle, and the vault stays one second brain with `/incubate` as the place app work happens. A separate type would be justified only if the lifecycles diverge.
+- `target` is the repo folder name; there is no mapping table to maintain. Matching is case-insensitive.
+- Hand-off replaces export. The repo side is the repo's own business (`docs/harness/index.md` present → its tracker skills; absent → a design doc). The vault side is fixed: `handoff:`, `project:`, `status: archived`.
+- Review is a pane layer, not a scheduled nudge: the inbox band already nudges, and a weekly timer would be a second reminder to ignore. Revisit if reviews get skipped.
+- Cost: the footer count reads the ideas shelf (up to 200 notes) on each refresh when the session is in a repo.
 
 ## Open questions
 

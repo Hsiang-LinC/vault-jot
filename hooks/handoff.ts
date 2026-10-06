@@ -28,12 +28,22 @@ export function decisionPrompt(vault: string, notePath: string, decision: string
   ].join(' ')
 }
 
-export function exportPrompt(vault: string, notePath: string, repoRoot: string): string {
-  const project = repoRoot.replace(/\/+$/, '').split('/').at(-1) ?? repoRoot
+// Where a handed-off idea lands depends on the target repo: with a harness
+// (`docs/harness/index.md`) its own tracker skills decide the artifact; without
+// one, a design doc. Either way the vault side is fixed: `handoff:` points at
+// what was created and the idea is closed out.
+export const HARNESS_INDEX = 'docs/harness/index.md'
+
+export function handoffPrompt(vault: string, notePath: string, repoRoot: string, hasHarness: boolean): string {
+  const root = repoRoot.replace(/\/+$/, '')
+  const project = root.split('/').at(-1) ?? root
+  const repoStep = hasHarness
+    ? `Hand off the idea note ${notePath} to the repo at ${root}, which has a harness: read ${root}/${HARNESS_INDEX}, then use the to-issues skill there (to-prd if the idea is a whole feature), taking the note's Spark, Options, Decisions and Next Step as the plan, and publish through the harness tracker.`
+    : `Turn the idea note ${notePath} into a design doc at ${root}/docs/design/<kebab-case title>.md: problem, goals, non-goals, options with tradeoffs, decisions, open questions, next steps. Follow that repo's conventions.`
 
   return [
-    `Turn the idea note ${notePath} into a design doc at ${repoRoot}/docs/design/<kebab-case title>.md: problem, goals, non-goals, options with tradeoffs, decisions, open questions, next steps. Follow that repo's conventions.`,
-    `Then, in the vault, set the idea's \`project:\` to ${project} and status: mature, and add the design doc's path under its "Related" section.`,
+    repoStep,
+    `Then, in the vault, set the idea's \`project:\` to ${project}, \`handoff:\` to the path or URL of what you created, status: archived, and add it under "Related".`,
     rules(vault),
   ].join(' ')
 }
@@ -56,7 +66,7 @@ export function readingPrompt(vault: string, notePath: string, state: ReadingSta
 export const DRAFT_PROMPT = [
   `Draft one capture for my notes vault: the single most useful thing in this conversation worth keeping.`,
   `Reply with exactly one line, \`<kind>: <text>\`, where kind is one of ${KINDS.join(', ')}`,
-  `(idea: something to explore or build; read: something to read, with its URL; til: something learned; pitfall: a failure mode and how to prevent it; plugin: a take on a tool; note: anything else).`,
+  `(idea: something to explore or build; improve: a change to make to an app, as "improve @<repo folder name>: <text>" when it is about a specific app; read: something to read, with its URL; til: something learned; pitfall: a failure mode and how to prevent it; plugin: a take on a tool; note: anything else).`,
   `Keep the text under 200 characters, in the language of the conversation. No other words.`,
 ].join(' ')
 

@@ -163,6 +163,15 @@ describe('/jot', () => {
     expect(statuses.at(-1)).toBe(undefined)
   })
 
+  test('writes an improve capture with its target', { options: { vaultPath: '/vault' } }, async ($, on) => {
+    const { files } = world(on)
+
+    const ran = await $.command.run(jot('improve @app: smaller panel'))
+
+    expect(ran.text).toMatch(/^Jotted improve → inbox\/jot-\d{8}-\d{6}-improve-smaller-panel\.md$/)
+    expect(files.get(captures(files)[0] ?? '')?.text).toContain('kind: improve\ntarget: "app"\ncaptured:')
+  })
+
   test('expands ~ in vaultPath', { options: { vaultPath: '~/notes/' } }, async ($, on) => {
     const { files } = world(on, { dirs: ['/Users/me/notes/inbox'] })
 
@@ -384,7 +393,7 @@ describe('/incubate (M3)', () => {
     await ui.press({ key: 'choose:1' })
     await ui.input({ key: 'decision', text: 'Ship verdict replay first' })
     await ui.press({ key: 'expand' })
-    await ui.press({ key: 'export' })
+    await ui.press({ key: 'handoff' })
 
     const note = `${IDEAS}/Replay Mode.md`
     expect(submits).toHaveLength(4)
@@ -392,16 +401,17 @@ describe('/incubate (M3)', () => {
     expect(submits[1]).toContain(`Record a decision on the idea note ${note}: "Ship verdict replay first".`)
     expect(submits[2]).toContain(`Incubate the idea note ${note}.`)
     expect(submits[3]).toContain(`into a design doc at /work/app/docs/design/`)
+    expect(submits[3]).toContain('`handoff:`')
   })
 
-  test('offers no export from inside the vault itself', { options: { vaultPath: '/vault' } }, async ($, on) => {
+  test('offers no hand-off from inside the vault itself', { options: { vaultPath: '/vault' } }, async ($, on) => {
     world(on, { ...shelves, repoRoot: '/vault' })
     await $.command.run({ ...jot('Replay Mode'), command: 'incubate' })
 
     const ui = await pane($)
 
     expect(await ui.find({ key: 'expand' })).not.toBe(undefined)
-    expect(await ui.find({ key: 'export' })).toBe(undefined)
+    expect(await ui.find({ key: 'handoff' })).toBe(undefined)
   })
 
   test('marks a reading item through Claude', { options: { vaultPath: '/vault' } }, async ($, on) => {
@@ -434,5 +444,85 @@ describe('/incubate (M3)', () => {
     expect((await ui.find({ key: 'ideas' }))?.text).toBe('🌱 Ideas 0')
     await ui.press({ key: 'ideas' })
     expect(await ui.find({ text: /Nothing here yet/ })).not.toBe(undefined)
+  })
+
+  test('hands an idea off through the repo harness when it has one', { options: { vaultPath: '/vault' } }, async ($, on) => {
+    const { submits } = world(on, {
+      ...shelves,
+      files: { ...shelves.files, '/work/app/docs/harness/index.md': { text: '# harness', mtimeMs: NOW } },
+    })
+    await $.command.run({ ...jot('replay mode'), command: 'incubate' })
+    const ui = await pane($)
+
+    expect((await ui.find({ key: 'handoff' }))?.text).toBe('Hand off to app')
+    await ui.press({ key: 'handoff' })
+
+    expect(submits[0]).toContain('/work/app/docs/harness/index.md')
+    expect(submits[0]).toContain('to-issues')
+  })
+
+  test('shows an idea target in the list and detail header', { options: { vaultPath: '/vault' } }, async ($, on) => {
+    world(on, {
+      ...shelves,
+      files: {
+        ...shelves.files,
+        [`${IDEAS}/Smaller Panel.md`]: { text: '---\ntitle: "Smaller Panel"\nstatus: seed\ntarget: "app"\n---\n', mtimeMs: NOW },
+      },
+    })
+    await $.command.run({ ...jot(''), command: 'incubate' })
+    const ui = await pane($)
+
+    await ui.press({ key: 'ideas' })
+    expect(await ui.find({ text: '🌱 Smaller Panel @app · seed' })).not.toBe(undefined)
+    await ui.press({ key: 'note:Smaller Panel.md' })
+    expect(await ui.find({ text: ' · @app' })).not.toBe(undefined)
+  })
+
+  test('review lists open ideas per app and stale seeds', { options: { vaultPath: '/vault' } }, async ($, on) => {
+    world(on, {
+      ...shelves,
+      files: {
+        ...shelves.files,
+        [`${IDEAS}/Old Seed.md`]: { text: '---\ntitle: "Old Seed"\nstatus: seed\ncreated: 2026-09-01\ntarget: "app"\n---\n', mtimeMs: NOW },
+      },
+    })
+    await $.command.run({ ...jot(''), command: 'incubate' })
+    const ui = await pane($)
+
+    await ui.press({ key: 'review' })
+
+    expect(await ui.find({ text: '  • app: 1' })).not.toBe(undefined)
+    expect(await ui.find({ text: '  • no target: 2' })).not.toBe(undefined)
+    await ui.press({ key: 'stale:Old Seed.md' })
+    expect(await ui.find({ text: ' · @app' })).not.toBe(undefined)
+  })
+})
+
+describe('repo footer', () => {
+  const IDEAS = '/vault/wiki/ideas'
+  const ideas = {
+    dirs: [INBOX, IDEAS],
+    files: {
+      [`${IDEAS}/A.md`]: { text: '---\nstatus: seed\ntarget: "app"\n---\n', mtimeMs: NOW },
+      [`${IDEAS}/B.md`]: { text: '---\nstatus: developing\ntarget: "APP"\n---\n', mtimeMs: NOW },
+      [`${IDEAS}/C.md`]: { text: '---\nstatus: archived\ntarget: "app"\n---\n', mtimeMs: NOW },
+      [`${IDEAS}/D.md`]: { text: '---\nstatus: seed\ntarget: "other"\n---\n', mtimeMs: NOW },
+    },
+  }
+
+  test('counts open ideas aimed at the session repo', { options: { vaultPath: '/vault' } }, async ($, on) => {
+    world(on, ideas)
+    engineFooter(on)
+    await $.session.start({ cwd: '/work/app', surface: 'terminal', isInteractive: true })
+
+    expect(await footerOf($)).toMatchObject({ children: ['focus & 🛠 app 2'] })
+  })
+
+  test('shows nothing inside the vault or when no idea targets the repo', { options: { vaultPath: '/vault' } }, async ($, on) => {
+    world(on, { ...ideas, repoRoot: '/vault' })
+    engineFooter(on)
+    await $.session.start({ cwd: '/vault', surface: 'terminal', isInteractive: true })
+
+    expect(await footerOf($)).toMatchObject({ children: ['focus'] })
   })
 })

@@ -1,7 +1,7 @@
 import { atom, read, update } from 'claude-code'
 import type { CommandRunResult, CommandSpec, EngineInterface, PluginOptions, Register } from 'claude-code'
 
-import type { Shelf, View } from '../types'
+import type { OpenForRepo, Shelf, View } from '../types'
 
 import {
   KINDS,
@@ -15,13 +15,14 @@ import {
   summarizeInbox,
 } from './core'
 import type { Jot, Thresholds } from './core'
-import { DRAFT_PROMPT, decisionPrompt, draftCommand, expandPrompt, exportPrompt, parseDraft, readingPrompt } from './handoff'
+import { DRAFT_PROMPT, HARNESS_INDEX, decisionPrompt, draftCommand, expandPrompt, handoffPrompt, parseDraft, readingPrompt } from './handoff'
 import type { ReadingState } from './handoff'
-import { SHELVES, findNote, parseNote, sortNotes, stateOf, titleOf } from './notes'
+import { SHELVES, STALE_SEED_DAYS, findNote, openForTarget, parseNote, reviewIdeas, sortNotes, stateOf, targetOf, titleOf } from './notes'
 import type { Note } from './notes'
 
 const backlog = atom({ plugin: 'vault-jot', key: 'backlog' } as const, null)
 const isHidden = atom({ plugin: 'vault-jot', key: 'isHidden' } as const, false)
+const openForRepo = atom({ plugin: 'vault-jot', key: 'openForRepo' } as const, null as OpenForRepo | null)
 
 // Command output carries no "vault-jot:" prefix: Claude Code already labels
 // a plugin command's output with the plugin's name.
@@ -133,16 +134,28 @@ async function draft($: EngineInterface): Promise<CommandRunResult> {
   return { text: 'draft is in your prompt. Edit it and press Enter to save, or clear it.' }
 }
 
+// The last path segment of the session's repo, which is what an idea's
+// `target` is matched against; null outside a repo and inside the vault.
+async function repoName($: EngineInterface, vault: string): Promise<string | null> {
+  const repo = await $.session.repo()
+
+  return repo === null || repo.root === vault ? null : (repo.root.replace(/\/+$/, '').split('/').at(-1) ?? null)
+}
+
 async function refresh($: EngineInterface, config: Config) {
   try {
-    const { inbox } = await resolveVault($, config)
+    const { vault, inbox } = await resolveVault($, config)
     const files = (await $.fs.list(inbox)).filter(entry => entry.kind === 'file')
     const next = summarizeInbox(files, await $.clock.now())
+    const name = await repoName($, vault)
+    const ideas = name === null ? [] : (await loadShelf($, vault, 'ideas')).notes
     $.ui.status(undefined)
     await update($, backlog, () => next)
+    await update($, openForRepo, () => (name === null ? null : { target: name, count: openForTarget(ideas, name).length }))
   } catch (error) {
     $.ui.status(`vault-jot: ${describe(error)}`.slice(0, STATUS_MAX))
     await update($, backlog, () => null)
+    await update($, openForRepo, () => null)
   }
 }
 
@@ -228,9 +241,13 @@ export const register: Register = (on, options) => {
 
   on('ui.render', { component: 'SessionMode' }, async ($, e, next) => {
     const current = await read($, backlog)
-    const label = current === null ? undefined : backlogLabel(current)
+    const forRepo = await read($, openForRepo)
+    const labels = [
+      current === null ? undefined : backlogLabel(current),
+      forRepo === null || forRepo.count === 0 ? undefined : `🛠 ${forRepo.target} ${forRepo.count}`,
+    ].filter(label => label !== undefined)
 
-    return label === undefined ? next(e) : next({ ...e, props: { ...e.props, modes: [...e.props.modes, label] } })
+    return labels.length === 0 ? next(e) : next({ ...e, props: { ...e.props, modes: [...e.props.modes, ...labels] } })
   })
 
   on('ui.render', { component: 'AbovePrompt' }, async ($, e, next) => {
@@ -311,7 +328,39 @@ export const register: Register = (on, options) => {
             <Button key="ideas" hotkey="i" label={`${SHELVES.ideas.icon} Ideas ${ideas.notes.length}`} onPress={go({ layer: 'list', shelf: 'ideas' })} />
             <Text> </Text>
             <Button key="reading" hotkey="r" label={`${SHELVES.reading.icon} Reading ${reading.notes.length}`} onPress={go({ layer: 'list', shelf: 'reading' })} />
+            <Text> </Text>
+            <Button key="review" hotkey="v" label="Review" onPress={go({ layer: 'review' })} />
           </Box>
+        </Box>
+      )
+    }
+
+    if (current.layer === 'review') {
+      const { notes: ideas } = await loadShelf($, vault, 'ideas')
+      const review = reviewIdeas(ideas, await $.clock.now())
+
+      return (
+        <Box flexDirection="column">
+          <Box>
+            <Button key="back" hotkey="b" plain label="‹ Shelves" onPress={go(HOME)} />
+            <Text bold> Review</Text>
+          </Box>
+          <Text bold>Open ideas by app</Text>
+          {review.openByTarget.length === 0 && review.openUntargeted === 0 && <Text dimColor> none</Text>}
+          {review.openByTarget.map(([target, count]) => (
+            <Text key={`app:${target}`}>  • {target}: {count}</Text>
+          ))}
+          {review.openUntargeted > 0 && <Text>  • no target: {review.openUntargeted}</Text>}
+          <Text bold>Seeds waiting {STALE_SEED_DAYS}+ days</Text>
+          {review.staleSeeds.length === 0 && <Text dimColor> none</Text>}
+          {review.staleSeeds.map(note => (
+            <Button
+              key={`stale:${note.file}`}
+              plain
+              label={`🌱 ${titleOf(note)}`}
+              onPress={go({ layer: 'detail', shelf: 'ideas', file: note.file })}
+            />
+          ))}
         </Box>
       )
     }
@@ -335,7 +384,7 @@ export const register: Register = (on, options) => {
             <Button
               key={`note:${note.file}`}
               plain
-              label={`${shelf.icon} ${titleOf(note)} · ${stateOf(current.shelf, note)}`}
+              label={`${shelf.icon} ${titleOf(note)}${targetOf(note) === undefined || current.shelf !== 'ideas' ? '' : ` @${targetOf(note)}`} · ${stateOf(current.shelf, note)}`}
               onPress={go({ layer: 'detail', shelf: current.shelf, file: note.file })}
             />
           ))}
@@ -360,6 +409,7 @@ export const register: Register = (on, options) => {
         {back}
         <Text bold> {titleOf(note)}</Text>
         <Text dimColor> · {stateOf(current.shelf, note)}</Text>
+        {current.shelf === 'ideas' && targetOf(note) !== undefined && <Text dimColor> · @{targetOf(note)}</Text>}
       </Box>
     )
 
@@ -386,7 +436,8 @@ export const register: Register = (on, options) => {
     const questions = note.sections['Open Questions'] ?? []
     const options = note.sections['Options'] ?? []
     const repo = await $.session.repo()
-    const exportRoot = repo !== null && repo.root !== vault ? repo.root : undefined
+    const handoffRoot = repo !== null && repo.root !== vault ? repo.root : undefined
+    const hasHarness = handoffRoot !== undefined && (await $.fs.exists(`${handoffRoot}/${HARNESS_INDEX}`))
     const decide = (decision: string) => send(decisionPrompt(vault, path, decision), 'record the decision')()
     // Mobile has no Input; there the options' Choose buttons still decide.
     let decisionInput = null
@@ -422,13 +473,13 @@ export const register: Register = (on, options) => {
         {decisionInput}
         <Box>
           <Button key="expand" hotkey="e" label="Expand" onPress={send(expandPrompt(vault, path), 'expand the idea')} />
-          {exportRoot !== undefined && <Text> </Text>}
-          {exportRoot !== undefined && (
+          {handoffRoot !== undefined && <Text> </Text>}
+          {handoffRoot !== undefined && (
             <Button
-              key="export"
+              key="handoff"
               hotkey="x"
-              label={`Export to ${exportRoot.split('/').at(-1)}`}
-              onPress={send(exportPrompt(vault, path, exportRoot), 'export it as a design doc')}
+              label={`Hand off to ${handoffRoot.split('/').at(-1)}`}
+              onPress={send(handoffPrompt(vault, path, handoffRoot, hasHarness), 'hand it off')}
             />
           )}
         </Box>

@@ -5,10 +5,13 @@ import type { Backlog } from '../types'
 
 // Must match the "Capture Kinds" table in the vault's Vault Guide, which
 // says what ingest turns each kind into.
-export const KINDS = ['idea', 'read', 'til', 'pitfall', 'plugin', 'note'] as const
+export const KINDS = ['idea', 'improve', 'read', 'til', 'pitfall', 'plugin', 'note'] as const
 export type Kind = (typeof KINDS)[number]
 
-export type Jot = { kind: Kind; text: string }
+// `target` names the app or repo an `improve` capture is about; ingest files
+// it as the idea's `target`, and the incubate pane matches it to the repo
+// folder name.
+export type Jot = { kind: Kind; text: string; target?: string }
 
 export type Origin = {
   cwd: string
@@ -21,20 +24,26 @@ export type InboxEntry = { name: string; mtimeMs: number }
 
 export type Thresholds = { count: number; days: number }
 
-const KIND_PREFIX = new RegExp(`^(${KINDS.join('|')}):\\s*`, 'i')
+const KIND_PREFIX = new RegExp(`^(${KINDS.join('|')})(?:\\s+@([\\p{L}\\p{N}_.-]+))?:\\s*`, 'iu')
 const DAY_MS = 24 * 60 * 60 * 1000
 const SLUG_MAX = 40
 const TITLE_MAX = 80
 
-// `/jot idea: text` → { kind: 'idea', text }. No known prefix → kind `note`,
-// so text like "https://..." is never mistaken for a kind. Null when empty.
+// `/jot idea: text` → { kind: 'idea', text }; `/jot improve @cx: text` also
+// carries a target. No known prefix → kind `note`, so text like
+// "https://..." is never mistaken for a kind. Null when empty.
 export function parseJot(args: string): Jot | null {
   const trimmed = args.trim()
   const match = KIND_PREFIX.exec(trimmed)
   const kind = (match?.[1]?.toLowerCase() ?? 'note') as Kind
   const text = (match ? trimmed.slice(match[0].length) : trimmed).trim()
 
-  return text === '' ? null : { kind, text }
+  if (text === '') {
+    return null
+  }
+  const target = match?.[2]
+
+  return target === undefined ? { kind, text } : { kind, text, target }
 }
 
 // Letters and digits in any script survive, so a non-English capture still
@@ -86,6 +95,7 @@ export function renderNote(jot: Jot, isoStamp: string, origin: Origin): string {
     '---',
     `title: ${yamlString(titleOf(jot.text))}`,
     `kind: ${jot.kind}`,
+    jot.target === undefined ? null : `target: ${yamlString(jot.target)}`,
     `captured: ${isoStamp}`,
     `origin_cwd: ${yamlString(origin.cwd)}`,
     origin.repo === null ? null : `origin_repo: ${yamlString(origin.repo)}`,

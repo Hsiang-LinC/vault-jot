@@ -24,9 +24,20 @@ describe('parseJot', () => {
     expect(parseJot('https://example.com/post')).toEqual({ kind: 'note', text: 'https://example.com/post' })
   })
 
+  test('reads an optional @target after the kind', () => {
+    expect(parseJot('improve @cx: smaller panel')).toEqual({ kind: 'improve', text: 'smaller panel', target: 'cx' })
+    expect(parseJot('Improve  @trading-advisor.v2:fix it')).toEqual({ kind: 'improve', text: 'fix it', target: 'trading-advisor.v2' })
+    expect(parseJot('improve: no target')).toEqual({ kind: 'improve', text: 'no target' })
+  })
+
+  test('an @target without a kind stays plain note text', () => {
+    expect(parseJot('@cx: smaller panel')).toEqual({ kind: 'note', text: '@cx: smaller panel' })
+  })
+
   test('is null for empty text, with or without a prefix', () => {
     expect(parseJot('   ')).toBe(null)
     expect(parseJot('read:   ')).toBe(null)
+    expect(parseJot('improve @cx:  ')).toBe(null)
   })
 })
 
@@ -79,6 +90,18 @@ describe('renderNote', () => {
         '',
       ].join('\n'),
     )
+  })
+})
+
+describe('renderNote target', () => {
+  test('writes target after kind when present', () => {
+    const note = renderNote({ kind: 'improve', text: 'smaller panel', target: 'cx' }, '2026-10-06T14:03:22+08:00', {
+      cwd: '/work/cx',
+      repo: null,
+      branch: null,
+      session: 'abc',
+    })
+    expect(note).toContain('kind: improve\ntarget: "cx"\ncaptured:')
   })
 })
 

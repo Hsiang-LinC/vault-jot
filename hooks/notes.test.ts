@@ -1,6 +1,6 @@
 import { describe, expect, test } from 'claude-code/testing'
 
-import { findNote, parseNote, sortNotes, stateOf, titleOf } from './notes'
+import { findNote, openForTarget, parseNote, reviewIdeas, sortNotes, stateOf, titleOf } from './notes'
 
 const IDEA = `---
 title: "Replay Mode"
@@ -64,5 +64,43 @@ describe('shelf order and lookup', () => {
     expect(findNote(shelf, 'snooze')).toMatchObject({ file: 'Band Snooze.md' })
     expect(findNote(shelf, 'replay')).toBe('ambiguous')
     expect(findNote(shelf, 'nothing')).toBe(undefined)
+  })
+})
+
+describe('targets', () => {
+  const idea = (file: string, props: string) => parseNote(file, `---\n${props}\n---\n`)
+  const NOW = Date.UTC(2026, 9, 20)
+
+  test('within a state, ideas group by target and untargeted ones come last', () => {
+    const notes = [
+      idea('z.md', 'status: seed'),
+      idea('b.md', 'status: seed\ntarget: "cx"'),
+      idea('a.md', 'status: seed\ntarget: "Alpha"'),
+    ]
+    expect(sortNotes('ideas', notes).map(one => one.file)).toEqual(['a.md', 'b.md', 'z.md'])
+  })
+
+  test('open ideas for a repo match its folder name case-insensitively and skip archived ones', () => {
+    const notes = [
+      idea('a.md', 'status: seed\ntarget: "CX"'),
+      idea('b.md', 'status: archived\ntarget: "cx"'),
+      idea('c.md', 'status: seed\ntarget: "other"'),
+      idea('d.md', 'status: seed'),
+    ]
+    expect(openForTarget(notes, 'cx').map(one => one.file)).toEqual(['a.md'])
+  })
+
+  test('review counts open ideas per app and finds seeds older than two weeks', () => {
+    const notes = [
+      idea('old.md', 'status: seed\ncreated: 2026-10-01\ntarget: "cx"'),
+      idea('new.md', 'status: seed\ncreated: 2026-10-15\ntarget: "cx"'),
+      idea('dev.md', 'status: developing\ncreated: 2026-09-01'),
+      idea('done.md', 'status: archived\ncreated: 2026-09-01\ntarget: "cx"'),
+      idea('nodate.md', 'status: seed'),
+    ]
+    const review = reviewIdeas(notes, NOW)
+    expect(review.staleSeeds.map(one => one.file)).toEqual(['old.md'])
+    expect(review.openByTarget).toEqual([['cx', 2]])
+    expect(review.openUntargeted).toBe(2)
   })
 })

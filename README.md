@@ -8,6 +8,7 @@ Design and roadmap: [docs/design.md](docs/design.md).
 
 ```text
 /jot idea: a mod that turns jots into design docs
+/jot improve @cx: make the panel smaller and navigable by layer
 /jot read: https://example.com/long-post — recommended in the hooks thread
 /jot til: Obsidian Bases can group by any property
 /jot pitfall: fs.write creates missing parent directories
@@ -17,7 +18,9 @@ Design and roadmap: [docs/design.md](docs/design.md).
 
 Each capture becomes `inbox/jot-<YYYYMMDD-HHMMSS>-<kind>-<slug>.md` in the vault, with flat frontmatter: `title`, `kind`, `captured`, and the origin (`origin_cwd`, `origin_repo`, `origin_branch`, `origin_session`). `/jot` runs immediately, even mid-turn. Kinds and how ingest files them are defined in the vault's Vault Guide ("Capture Kinds").
 
-The prompt footer shows the backlog (`📥 inbox 4 · 9d`); problems such as an unset or unreadable `vaultPath` go to the status line instead. When the inbox reaches `backlogCount` captures or its oldest is `backlogDays` old, a band above the prompt offers **Ingest** (fills the prompt with an ingest request to review and send) and **Hide** (for this session).
+`improve @<target>:` is a change to make to an app. `<target>` is the repo's folder name, so a session in that repo can find it; leave it out when the jot is not about one app. Ingest files it as an `idea` with a `target`.
+
+The prompt footer shows the backlog (`📥 inbox 4 · 9d`), and `🛠 cx 3` when a session runs in a repo that has open ideas targeting it; problems such as an unset or unreadable `vaultPath` go to the status line instead. When the inbox reaches `backlogCount` captures or its oldest is `backlogDays` old, a band above the prompt offers **Ingest** (fills the prompt with an ingest request to review and send) and **Hide** (for this session).
 
 ### Draft from the conversation
 
@@ -28,14 +31,17 @@ The prompt footer shows the backlog (`📥 inbox 4 · 9d`); problems such as an 
 `/incubate` opens a small pane you move through layer by layer:
 
 ```text
-Shelves            🌱 Ideas 2   📖 Reading 1
-└ Ideas            ‹ Shelves · 🌱 Replay Mode · developing · 🌱 Band Snooze · seed
-  └ Replay Mode    open questions, options [Choose], a Decision box, [Expand], [Export to <repo>]
+Shelves            🌱 Ideas 2   📖 Reading 1   Review
+└ Ideas            ‹ Shelves · 🌱 Replay Mode · developing · 🌱 Smaller Panel @cx · seed
+  └ Replay Mode    open questions, options [Choose], a Decision box, [Expand], [Hand off to <repo>]
 └ Reading
   └ Hooks Post     url, [Reading] [Done] [Drop]
+└ Review           open ideas per app, seeds waiting 14+ days
 ```
 
-`/incubate <title>` jumps straight to an idea. Every change is handed to Claude as a prompt (recorded under "## Decisions", status moves, design doc exported to `<repo>/docs/design/`), so claude-obsidian stays the only writer under `wiki/`. Export appears when the session is in a repo other than the vault. Hotkeys: `b` back, `i`/`r` shelves, `1`–`9` choose an option, `e` expand, `x` export or drop.
+`/incubate <title>` jumps straight to an idea. Every change is handed to Claude as a prompt (recorded under "## Decisions", status moves, idea handed off to the repo), so claude-obsidian stays the only writer under `wiki/`. Within a state, ideas group by target.
+
+**Hand off** appears when the session is in a repo other than the vault. If the repo has a harness (`docs/harness/index.md`), Claude uses that repo's `to-issues` (or `to-prd`) skill; otherwise it writes `docs/design/<title>.md`. Either way the idea gets `handoff:` (what was created), `project:`, and `status: archived`. Hotkeys: `b` back, `i`/`r`/`v` shelves and review, `1`–`9` choose an option, `e` expand, `x` hand off or drop.
 
 ## Configure
 

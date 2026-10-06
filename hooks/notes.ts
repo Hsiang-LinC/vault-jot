@@ -81,6 +81,11 @@ export function stateOf(shelf: Shelf, note: Note): string {
   return shelf === 'ideas' ? (note.props.status ?? 'seed') : (note.props.reading_state ?? 'queued')
 }
 
+// An idea's `target` names the app it would change (an `improve` capture);
+// the pane matches it to the repo folder name.
+export const targetOf = (note: Note): string | undefined => note.props.target
+
+// Ideas within a state group by target, then title; untargeted ideas last.
 export function sortNotes(shelf: Shelf, notes: readonly Note[]): Note[] {
   const order = STATE_ORDER[shelf]
   const rank = (note: Note) => {
@@ -88,8 +93,53 @@ export function sortNotes(shelf: Shelf, notes: readonly Note[]): Note[] {
 
     return index === -1 ? order.length : index
   }
+  const target = (note: Note) => (shelf === 'ideas' ? (targetOf(note)?.toLowerCase() ?? '\uffff') : '')
 
-  return [...notes].sort((a, b) => rank(a) - rank(b) || titleOf(a).localeCompare(titleOf(b)))
+  return [...notes].sort(
+    (a, b) => rank(a) - rank(b) || target(a).localeCompare(target(b)) || titleOf(a).localeCompare(titleOf(b)),
+  )
+}
+
+const isClosed = (note: Note) => stateOf('ideas', note) === 'archived'
+
+// Open (not archived) ideas aimed at `target`, compared case-insensitively.
+export function openForTarget(ideas: readonly Note[], target: string): Note[] {
+  const wanted = target.toLowerCase()
+
+  return ideas.filter(note => targetOf(note)?.toLowerCase() === wanted && !isClosed(note))
+}
+
+const DAY_MS = 24 * 60 * 60 * 1000
+export const STALE_SEED_DAYS = 14
+
+export type Review = { staleSeeds: Note[]; openByTarget: [string, number][]; openUntargeted: number }
+
+// What the review layer shows: seeds nobody has picked up, and how much open
+// feedback each app has. `created` is a YYYY-MM-DD date; seeds without a
+// readable one are not counted stale.
+export function reviewIdeas(ideas: readonly Note[], nowMs: number): Review {
+  const open = ideas.filter(note => !isClosed(note))
+  const age = (note: Note) => {
+    const created = Date.parse(note.props.created ?? '')
+
+    return Number.isNaN(created) ? 0 : Math.floor((nowMs - created) / DAY_MS)
+  }
+  const counts = new Map<string, number>()
+  let openUntargeted = 0
+  for (const note of open) {
+    const target = targetOf(note)?.toLowerCase()
+    if (target === undefined) {
+      openUntargeted += 1
+    } else {
+      counts.set(target, (counts.get(target) ?? 0) + 1)
+    }
+  }
+
+  return {
+    staleSeeds: open.filter(note => stateOf('ideas', note) === 'seed' && age(note) >= STALE_SEED_DAYS),
+    openByTarget: [...counts].sort(([a], [b]) => a.localeCompare(b)),
+    openUntargeted,
+  }
 }
 
 // Exact title or file name first (case-insensitive), then a unique substring.
