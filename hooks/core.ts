@@ -33,17 +33,94 @@ const TITLE_MAX = 80
 // carries a target. No known prefix → kind `note`, so text like
 // "https://..." is never mistaken for a kind. Null when empty.
 export function parseJot(args: string): Jot | null {
-  const trimmed = args.trim()
-  const match = KIND_PREFIX.exec(trimmed)
-  const kind = (match?.[1]?.toLowerCase() ?? 'note') as Kind
-  const text = (match ? trimmed.slice(match[0].length) : trimmed).trim()
+  const { kind, text, target } = splitKind(args)
 
   if (text === '') {
     return null
   }
-  const target = match?.[2]
 
   return target === undefined ? { kind, text } : { kind, text, target }
+}
+
+function splitKind(args: string): { kind: Kind; text: string; target?: string; hasPrefix: boolean } {
+  const trimmed = args.trim()
+  const match = KIND_PREFIX.exec(trimmed)
+  const kind = (match?.[1]?.toLowerCase() ?? 'note') as Kind
+  const text = (match ? trimmed.slice(match[0].length) : trimmed).trim()
+  const target = match?.[2]
+
+  return target === undefined ? { kind, text, hasPrefix: match !== null } : { kind, text, target, hasPrefix: match !== null }
+}
+
+// What a draft looks at: the last few turns, or the whole discussion's arc.
+export type DraftScope = 'recent' | 'summary'
+export type DraftRequest = { scope: DraftScope; kind?: Kind; target?: string }
+
+export type Request =
+  | { mode: 'capture'; jot: Jot }
+  | ({ mode: 'draft' } & DraftRequest)
+  | { mode: 'ingest' }
+  | { mode: 'invalid'; reason: string }
+
+// The words `/jot` takes alone, besides the kinds.
+export const WORDS = ['summary', 'ingest'] as const
+
+// A word followed by a colon (and maybe `@target`) where a kind would go.
+const KIND_SLOT = /^([\p{L}]+)(?:\s*@[\p{L}\p{N}_.-]*)?:/u
+
+function distance(a: string, b: string): number {
+  let row = Array.from({ length: b.length + 1 }, (_, j) => j)
+  for (let i = 1; i <= a.length; i++) {
+    const next = [i]
+    for (let j = 1; j <= b.length; j++) {
+      next[j] = Math.min((row[j] ?? 0) + 1, (next[j - 1] ?? 0) + 1, (row[j - 1] ?? 0) + (a[i - 1] === b[j - 1] ? 0 : 1))
+    }
+    row = next
+  }
+
+  return row[b.length] ?? 0
+}
+
+// The kind a mistyped word most likely meant: within two edits of it, and
+// not a kind itself. Words further off ("Remember:", "https:") are text.
+export function kindTypo(word: string): Kind | null {
+  const lower = word.toLowerCase()
+  if (lower.length < 3 || (KINDS as readonly string[]).includes(lower)) {
+    return null
+  }
+  const [best] = KINDS.map(kind => ({ kind, d: distance(lower, kind) }))
+    .filter(({ d }) => d <= 2)
+    .sort((a, b) => a.d - b.d)
+
+  return best?.kind ?? null
+}
+
+export const typoReason = (word: string, kind: Kind) => `unknown kind "${word}"; did you mean ${kind}?`
+
+// What `/jot <args>` asks for. The reserved words count only alone, so text
+// that merely starts with one (`/jot ingest is slow`) is still captured.
+export function parseRequest(args: string): Request {
+  const word = args.trim().toLowerCase()
+  if (word === 'ingest') {
+    return { mode: 'ingest' }
+  }
+  if (word === 'summary') {
+    return { mode: 'draft', scope: 'summary' }
+  }
+  const slot = KIND_SLOT.exec(args.trim())?.[1]
+  const meant = slot === undefined ? null : kindTypo(slot)
+  if (slot !== undefined && meant !== null) {
+    return { mode: 'invalid', reason: typoReason(slot, meant) }
+  }
+  const { kind, text, target, hasPrefix } = splitKind(args)
+  if (text !== '') {
+    return { mode: 'capture', jot: target === undefined ? { kind, text } : { kind, text, target } }
+  }
+  if (!hasPrefix) {
+    return { mode: 'draft', scope: 'recent' }
+  }
+
+  return target === undefined ? { mode: 'draft', scope: 'recent', kind } : { mode: 'draft', scope: 'recent', kind, target }
 }
 
 // Letters and digits in any script survive, so a non-English capture still

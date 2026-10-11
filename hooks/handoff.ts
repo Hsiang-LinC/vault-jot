@@ -3,9 +3,9 @@
 // maintained notes are handed to Claude as prompts built here.
 
 import { KINDS, parseJot } from './core'
-import type { Jot } from './core'
+import type { DraftRequest, DraftScope, Jot } from './core'
 
-const DRAFT_MAX = 500
+const DRAFT_MAX: Record<DraftScope, number> = { recent: 500, summary: 4000 }
 
 const rules = (vault: string) =>
   `Work in the vault at ${vault}: follow its CLAUDE.md and wiki/meta/Vault Guide.md, set \`updated\` to today, and record the change in wiki/log.md.`
@@ -66,30 +66,74 @@ export function readingPrompt(vault: string, notePath: string, state: ReadingSta
     .join(' ')
 }
 
-// What `/jot` with no text asks a fork of the conversation.
-export const DRAFT_PROMPT = [
-  `Draft one capture for my notes vault: the single most useful thing in this conversation worth keeping.`,
-  `Reply with exactly one line, \`<kind>: <text>\`, where kind is one of ${KINDS.join(', ')}`,
-  `(idea: something to explore or build; improve: a change to make to an app, as "improve @<repo folder name>: <text>" when it is about a specific app; read: something to read, with its URL; til: something learned; pitfall: a failure mode and how to prevent it; plugin: a take on a tool; note: anything else).`,
-  `Keep the text under 200 characters, in the language of the conversation. No other words.`,
-].join(' ')
+const KIND_GUIDE = `(idea: something to explore or build; improve: a change to make to an app; read: something to read, with its URL; til: something learned; pitfall: a failure mode and how to prevent it; plugin: a take on a tool; note: anything else)`
 
-// The model's first non-empty line, unwrapped from quotes or backticks.
-export function parseDraft(reply: string): Jot | null {
-  const line = reply
-    .split('\n')
-    .map(part => part.trim())
-    .find(part => part !== '')
-  if (line === undefined) {
-    return null
+// The note's subject, not where it came up: the model knows what the
+// conversation is about, so it names the repo.
+const TARGET_RULE = `When it is about a specific app or repo, write "<kind> @<repo folder name>: <text>" instead.`
+
+function kindRule(request: DraftRequest): string {
+  if (request.kind === undefined) {
+    return `kind is one of ${KINDS.join(', ')} ${KIND_GUIDE}. ${TARGET_RULE}`
   }
+  if (request.target === undefined) {
+    return `kind is ${request.kind}. ${TARGET_RULE}`
+  }
+  const about = request.target === undefined ? '' : `, about ${request.target}`
 
-  return parseJot(line.replace(/^[`"']+|[`"']+$/g, ''))
+  return `kind is ${request.kind}${about}.`
 }
 
-export function draftCommand(jot: Jot): string {
-  const chars = [...jot.text]
-  const text = chars.length > DRAFT_MAX ? `${chars.slice(0, DRAFT_MAX - 1).join('')}…` : jot.text
+// What a fork of the conversation is asked for a draft. The fork always sees
+// the whole transcript, so only the prompt can narrow what it looks at.
+// `recent` is a quick capture of what just came up; `summary` traces how a
+// long discussion converged, where the insight usually is.
+export function draftPrompt(request: DraftRequest): string {
+  if (request.scope === 'summary') {
+    return [
+      `Summarize this whole discussion as one capture for my notes vault, tracing how our understanding converged.`,
+      `First line: \`<kind>: <title>\`, where ${kindRule(request)} Keep the title under 80 characters and make it the insight, not the topic.`,
+      `Then short markdown bullets under these headings: "Question" (what we set out to settle), "Wrong turns" (misunderstandings and assumptions we corrected, and what corrected them), "Agreed" (where we landed and why), "Insight" (what to remember next time).`,
+      `Skip a heading with nothing real under it. Under 3000 characters, in the language of the conversation. No other words.`,
+    ].join(' ')
+  }
 
-  return `/jot ${jot.kind}: ${text}`
+  return [
+    `Draft one capture for my notes vault from the most recent exchange (the last few turns): the single most useful thing there worth keeping, such as a finding, an answer, or a question it raised.`,
+    `Look further back only if nothing recent is worth keeping.`,
+    `Reply with exactly one line, \`<kind>: <text>\`, where ${kindRule(request)}`,
+    `Keep the text under 200 characters, in the language of the conversation. No other words.`,
+  ].join(' ')
+}
+
+const FENCE = /^```[^\n]*\n?|\n?```$/g
+
+// A recent draft is the model's first non-empty line, unwrapped from quotes
+// or backticks; a summary is the whole reply, unwrapped from a code fence.
+// A kind or target the person asked for wins over the model's choice.
+export function parseDraft(reply: string, request: DraftRequest = { scope: 'recent' }): Jot | null {
+  const body =
+    request.scope === 'summary'
+      ? reply.trim().replace(FENCE, '').trim()
+      : (reply
+          .split('\n')
+          .map(part => part.trim())
+          .find(part => part !== '') ?? '').replace(/^[`"']+|[`"']+$/g, '')
+  const jot = parseJot(body)
+  if (jot === null || request.kind === undefined) {
+    return jot
+  }
+
+  const target = request.target ?? jot.target
+
+  return target === undefined ? { kind: request.kind, text: jot.text } : { kind: request.kind, text: jot.text, target }
+}
+
+export function draftCommand(jot: Jot, scope: DraftScope = 'recent'): string {
+  const max = DRAFT_MAX[scope]
+  const chars = [...jot.text]
+  const text = chars.length > max ? `${chars.slice(0, max - 1).join('')}…` : jot.text
+  const target = jot.target === undefined ? '' : ` @${jot.target}`
+
+  return `/jot ${jot.kind}${target}: ${text}`
 }
