@@ -1,5 +1,5 @@
 import { describe, expect, mock, test } from 'claude-code/testing'
-import type { On } from 'claude-code'
+import type { On, PromptEditInput, PromptEditResult } from 'claude-code'
 import type { Engine } from 'claude-code/testing'
 
 import { fileName, localStamp } from './core'
@@ -19,6 +19,7 @@ type WorldOptions = {
   repoRoot?: string
   forkReply?: string | null
   isFillRefused?: boolean
+  spawnDenied?: string
 }
 
 function world(on: On, opts: WorldOptions = {}) {
@@ -26,8 +27,13 @@ function world(on: On, opts: WorldOptions = {}) {
   const files = new Map(Object.entries(opts.files ?? {}))
   const statuses: (string | undefined)[] = []
   const fills: string[] = []
+  const forks: string[] = []
   const submits: string[] = []
+  const spawns: { prompt: string; description: string; cwd?: string; agentId: string }[] = []
+  const toasts: string[] = []
+  const appended: string[] = []
   const opened: string[] = []
+  const closed: string[] = []
   const dirOf = (path: string) => path.slice(0, path.lastIndexOf('/'))
 
   mock.env(on, { HOME: '/Users/me' })
@@ -71,7 +77,8 @@ function world(on: On, opts: WorldOptions = {}) {
   on('session.repo', async () => ({
     value: { root: opts.repoRoot ?? '/work/app', remote: 'git@github.com:me/app.git', internal: false, name: null },
   }))
-  on('model.fork', async () => {
+  on('model.fork', async (_$, e) => {
+    forks.push(e.prompt)
     const usage = { input_tokens: 1, output_tokens: 1, cache_creation_input_tokens: 0, cache_read_input_tokens: 0 }
 
     return {
@@ -86,7 +93,27 @@ function world(on: On, opts: WorldOptions = {}) {
 
     return { value: { isPlaced: true as const } }
   })
-  on('ui.toast', async () => ({ value: undefined }))
+  on('ui.close', async (_$, e) => {
+    closed.push(e.id)
+
+    return { value: undefined }
+  })
+  on('ui.toast', async (_$, e) => {
+    toasts.push(e.text)
+
+    return { value: undefined }
+  })
+  on('session.append', async (_$, e) => {
+    appended.push(e.message.content.map(block => ('text' in block ? block.text : '')).join(''))
+
+    return e
+  })
+  on('agent.spawn', async (_$, e) => {
+    const agentId = `agent-${spawns.length + 1}`
+    spawns.push({ prompt: e.prompt, description: e.description, ...(e.cwd === undefined ? {} : { cwd: e.cwd }), agentId })
+
+    return opts.spawnDenied === undefined ? { model: 'sonnet', agentId } : { deny: opts.spawnDenied }
+  })
   on('prompt.submit', async (_$, e) => {
     submits.push(e.text)
 
@@ -111,7 +138,7 @@ function world(on: On, opts: WorldOptions = {}) {
     return opts.isFillRefused ? { isFilled: false } : { isFilled: true }
   })
 
-  return { files, statuses, fills, submits, opened }
+  return { files, statuses, fills, forks, submits, spawns, toasts, appended, opened, closed }
 }
 
 // `/jot <args>` as the person types it at the prompt.
@@ -201,15 +228,6 @@ describe('/jot', () => {
     expect(files.get(taken)?.text).toBe('first')
   })
 
-  test('shows usage for empty text and writes nothing', { options: { vaultPath: '/vault' } }, async ($, on) => {
-    const { files } = world(on)
-
-    const ran = await $.command.run(jot('idea:  '))
-
-    expect(ran.text).toMatch(/^Usage: \/jot/)
-    expect(files.size).toBe(0)
-  })
-
   test('refuses loudly when vaultPath is unset', async ($, on) => {
     const { files, statuses } = world(on)
 
@@ -253,15 +271,17 @@ describe('backlog footer', () => {
   })
 })
 
+// The props the engine hands the band.
+const PROPS = {
+  hasSurvey: false,
+  isWorking: false,
+  maxRows: 10,
+  bodyColumns: 80,
+  scroll: { offset: 0, bodyRows: 10 },
+  view: {},
+}
+
 describe('backlog band', () => {
-  const PROPS = {
-    hasSurvey: false,
-    isWorking: false,
-    maxRows: 10,
-    bodyColumns: 80,
-    scroll: { offset: 0, bodyRows: 10 },
-    view: {},
-  }
 
   const stale = Object.fromEntries(
     ['a', 'b'].map(name => [`${INBOX}/${name}.md`, { text: name, mtimeMs: NOW - 8 * DAY }]),
@@ -269,7 +289,7 @@ describe('backlog band', () => {
 
   for (const surface of ['terminal', 'desktop'] as const) {
     test(`offers ingest when the inbox is stale (${surface})`, { options: { vaultPath: '/vault' } }, async ($, on) => {
-      const { statuses, fills } = world(on, { files: stale })
+      const { statuses, spawns } = world(on, { files: stale })
       on('ui.render', { component: 'AbovePrompt' }, async ($, e) => {
         const { Text } = $.ui.resolve(e)
 
@@ -282,13 +302,66 @@ describe('backlog band', () => {
       expect((await ui.find({ key: 'ingest' }))?.text).toBe('Ingest')
 
       await ui.press({ key: 'ingest' })
-      expect(fills).toEqual(['Ingest the captures in /vault/inbox with claude-obsidian wiki-ingest (batch).'])
+      expect(spawns.map(spawn => spawn.prompt)).toEqual([
+        'Ingest the captures in /vault/inbox with claude-obsidian wiki-ingest (batch).',
+      ])
+
+      expect(await ui.find({ text: 'engine' as never })).not.toBe(undefined)
 
       await ui.press({ key: 'hide' })
       expect(await ui.find({ key: 'ingest' })).toBe(undefined)
-      expect(await ui.drawn()).toMatchObject({ type: 'Text', children: ['engine'] })
+      expect(await ui.find({ text: 'engine' as never })).not.toBe(undefined)
     })
   }
+
+  test('keeps the drawing beneath it when nothing is due (terminal)', { options: { vaultPath: '/vault' } }, async ($, on) => {
+    world(on, { files: { [`${INBOX}/a.md`]: { text: 'a', mtimeMs: NOW } } })
+    on('ui.render', { component: 'AbovePrompt' }, async ($, e) => {
+      const { Text } = $.ui.resolve(e)
+
+      return <Text key="engine">engine</Text>
+    })
+    await $.session.start({ cwd: '/work/app', surface: 'terminal', isInteractive: true })
+
+    const ui = await $.ui.mount({ plugin: 'vault-jot', surface: 'terminal', component: 'AbovePrompt', props: PROPS })
+
+    expect(await ui.drawn()).toMatchObject({ type: 'Text', children: ['engine'] })
+  })
+
+  // The desktop draws no footer labels, so the band carries them there.
+  test('carries the footer labels at the right end of the band (desktop)', { options: { vaultPath: '/vault' } }, async ($, on) => {
+    world(on, { files: { [`${INBOX}/a.md`]: { text: 'a', mtimeMs: NOW } } })
+    on('ui.render', { component: 'AbovePrompt' }, async ($, e) => {
+      const { Text } = $.ui.resolve(e)
+
+      return <Text key="engine">engine</Text>
+    })
+    await $.session.start({ cwd: '/work/app', surface: 'desktop', isInteractive: true })
+
+    const ui = await $.ui.mount({ plugin: 'vault-jot', surface: 'desktop', component: 'AbovePrompt', props: PROPS })
+
+    const root = await ui.drawn()
+    expect(root).toMatchObject({ type: 'Box', props: { justifyContent: 'space-between' } })
+    expect((root as { children: unknown[] }).children).toMatchObject([
+      { type: 'Box', children: [{ type: 'Text', children: ['engine'] }] },
+      { type: 'Box', children: [{ type: 'Text', children: ['📥 inbox 1 · 0d'] }] },
+    ])
+    expect(await ui.find({ key: 'ingest' })).toBe(undefined)
+  })
+
+  test('shows a vault problem in the band (desktop)', async ($, on) => {
+    world(on)
+    on('ui.render', { component: 'AbovePrompt' }, async ($, e) => {
+      const { Box } = $.ui.resolve(e)
+
+      return <Box key="engine" />
+    })
+    await $.session.start({ cwd: '/work/app', surface: 'desktop', isInteractive: true })
+
+    const ui = await $.ui.mount({ plugin: 'vault-jot', surface: 'desktop', component: 'AbovePrompt', props: PROPS })
+
+    expect(await ui.find({ text: /vault-jot: vaultPath is not set/ as never })).not.toBe(undefined)
+  })
 
   test('stays out of the way below the thresholds', { options: { vaultPath: '/vault', backlogDays: 30 } }, async ($, on) => {
     world(on, { files: stale })
@@ -307,41 +380,92 @@ describe('backlog band', () => {
 
 describe('/jot ingest', () => {
   const inbox = { [`${INBOX}/jot-a.md`]: { text: 'x', mtimeMs: NOW } }
+  const REQUEST = 'Ingest the captures in /vault/inbox with claude-obsidian wiki-ingest (batch).'
 
-  test('fills the ingest request below the band thresholds', { options: { vaultPath: '/vault' } }, async ($, on) => {
-    const { fills, submits } = world(on, { files: inbox })
+  test('runs ingest in a background subagent below the band thresholds', { options: { vaultPath: '/vault' } }, async ($, on) => {
+    const { fills, submits, spawns } = world(on, { files: inbox })
 
     const ran = await $.command.run(jot(' Ingest '))
 
-    expect(fills).toEqual(['Ingest the captures in /vault/inbox with claude-obsidian wiki-ingest (batch).'])
+    expect(spawns).toEqual([{ prompt: REQUEST, description: 'ingest 1 captures', cwd: '/vault', agentId: 'agent-1' }])
+    expect(fills).toEqual([])
     expect(submits).toEqual([])
-    expect(ran.text).toMatch(/ingest request is in your prompt/)
+    expect(ran.text).toMatch(/ingesting 1 captures in the background/)
   })
 
   test('says so when the inbox is empty', { options: { vaultPath: '/vault' } }, async ($, on) => {
-    const { fills } = world(on)
+    const { spawns } = world(on)
 
     const ran = await $.command.run(jot('ingest'))
 
     expect(ran.text).toBe('inbox is empty; nothing to ingest.')
-    expect(fills).toEqual([])
+    expect(spawns).toEqual([])
   })
 
-  test('keeps the request visible when the prompt box refuses it', { options: { vaultPath: '/vault' } }, async ($, on) => {
-    world(on, { files: inbox, isFillRefused: true })
+  test('says so when the engine starts the subagent without an id', { options: { vaultPath: '/vault' } }, async ($, on) => {
+    const { toasts } = world(on, { files: inbox })
+
+    await $.command.run(jot('ingest'))
+
+    expect(toasts).toEqual(['vault-jot: started in the background: ingest 1 captures (no completion notice)'])
+  })
+
+  test('reports a refused spawn instead of dropping the request', { options: { vaultPath: '/vault' } }, async ($, on) => {
+    world(on, { files: inbox, spawnDenied: 'agents are disabled' })
 
     const ran = await $.command.run(jot('ingest'))
 
-    expect(ran.text).toMatch(/^could not fill the prompt \(refused\)\. Request: Ingest the captures/)
+    expect(ran.text).toBe('not started: agents are disabled')
   })
 
   test('still captures text that merely starts with the word', { options: { vaultPath: '/vault' } }, async ($, on) => {
-    const { files, fills } = world(on)
+    const { files, spawns } = world(on)
 
     await $.command.run(jot('ingest is slow today'))
 
     expect(captures(files)).toHaveLength(1)
-    expect(fills).toEqual([])
+    expect(spawns).toEqual([])
+  })
+})
+
+describe('/recall', () => {
+  const pane = ($: Engine) =>
+    $.ui.mount({ plugin: 'vault-jot', surface: 'terminal', component: 'Pane', requestId: 'incubate', props: { width: 100, height: 30 } as never })
+
+  test('asks a read-only subagent in the vault and lists the question', { options: { vaultPath: '/vault' } }, async ($, on) => {
+    const { spawns, submits, appended } = world(on)
+
+    await $.command.run({ ...jot('where do pitfalls go?'), command: 'recall' })
+
+    expect(spawns).toHaveLength(1)
+    expect(spawns[0]?.cwd).toBe('/vault')
+    expect(spawns[0]?.prompt).toContain('do not create, edit or delete any file')
+    expect(spawns[0]?.prompt).toContain('Question: "where do pitfalls go?"')
+    expect(submits).toEqual([])
+    expect(appended).toEqual([])
+  })
+
+  test('fails the recall loudly when its subagent has no id to collect from', { options: { vaultPath: '/vault' } }, async ($, on) => {
+    world(on)
+
+    const ran = await $.command.run({ ...jot('where do pitfalls go?'), command: 'recall' })
+    await $.command.run({ ...jot(''), command: 'recall' })
+    const ui = await pane($)
+
+    expect(ran.text).toMatch(/^not started: the engine started the subagent without an id/)
+    expect((await ui.findAll({ type: 'Button' })).map(button => button.text)).toContain('✗ where do pitfalls go?')
+  })
+
+  test('opens the answers with no question, and says when nothing was asked', { options: { vaultPath: '/vault' } }, async ($, on) => {
+    const { opened, spawns } = world(on)
+
+    const ran = await $.command.run({ ...jot(''), command: 'recall' })
+    const ui = await pane($)
+
+    expect(ran.text).toBe('recall answers opened.')
+    expect(opened).toEqual(['incubate'])
+    expect(spawns).toEqual([])
+    expect(await ui.find({ text: /Nothing asked yet/ as never })).not.toBe(undefined)
   })
 })
 
@@ -371,6 +495,82 @@ describe('/jot with no text (M2)', () => {
     const ran = await $.command.run(jot(''))
 
     expect(ran.text).toBe('could not fill the prompt (refused). Draft: /jot til: x')
+  })
+
+  test('a kind alone drafts that kind', { options: { vaultPath: '/vault' } }, async ($, on) => {
+    const { fills, forks } = world(on, { forkReply: 'idea: stat before fs.write' })
+
+    await $.command.run(jot('pitfall:'))
+
+    expect(forks[0]).toContain('where kind is pitfall.')
+    expect(fills).toEqual(['/jot pitfall: stat before fs.write'])
+  })
+
+  const SUMMARY = 'til: fork sees the whole transcript\n\n- we assumed it could be cut\n- only the prompt can steer it'
+  const draftPane = ($: Engine) =>
+    $.ui.mount({ plugin: 'vault-jot', surface: 'terminal', component: 'Pane', requestId: 'jot-draft', props: { width: 100, height: 30 } as never })
+
+  test('/jot summary previews the summary in a pane and saves nothing', { options: { vaultPath: '/vault' } }, async ($, on) => {
+    const { files, fills, forks, opened } = world(on, { forkReply: SUMMARY })
+
+    const ran = await $.command.run(jot('summary'))
+    const ui = await draftPane($)
+
+    expect(forks[0]).toContain('whole discussion')
+    expect(opened).toEqual(['jot-draft'])
+    expect(ran.text).toBe('summary draft is in the pane.')
+    expect(await ui.find({ text: /only the prompt can steer it/ as never })).not.toBe(undefined)
+    expect(fills).toEqual([])
+    expect(files.size).toBe(0)
+  })
+
+  test('saving the summary from the pane writes it and closes the pane', { options: { vaultPath: '/vault' } }, async ($, on) => {
+    const { files, closed, toasts } = world(on, { forkReply: SUMMARY })
+    await $.command.run(jot('summary'))
+    const ui = await draftPane($)
+
+    await ui.press({ key: 'save' })
+
+    const [note] = [...files.values()]
+    expect(note?.text).toMatch(/kind: til/)
+    expect(note?.text).toMatch(/- only the prompt can steer it\n$/)
+    expect(toasts[0]).toMatch(/^vault-jot: Jotted til → inbox\//)
+    expect(closed).toEqual(['jot-draft'])
+  })
+
+  test('edit moves the summary into the prompt; discard drops it', { options: { vaultPath: '/vault' } }, async ($, on) => {
+    const { files, fills, closed } = world(on, { forkReply: SUMMARY })
+    await $.command.run(jot('summary'))
+
+    const first = await draftPane($)
+    await first.press({ key: 'edit' })
+    expect(fills).toEqual([`/jot ${SUMMARY}`])
+    await first.unmount()
+
+    await $.command.run(jot('summary'))
+    await (await draftPane($)).press({ key: 'discard' })
+    expect(closed).toEqual(['jot-draft', 'jot-draft'])
+    expect(files.size).toBe(0)
+  })
+
+  test('a failed summary says why in the pane', { options: { vaultPath: '/vault' } }, async ($, on) => {
+    world(on, { forkReply: null })
+
+    const ran = await $.command.run(jot('summary'))
+    const ui = await draftPane($)
+
+    expect(ran.text).toMatch(/^nothing to draft from yet/)
+    expect(await ui.find({ text: /nothing to draft from yet/ as never })).not.toBe(undefined)
+  })
+
+  test('saving a summary draft keeps its lines', { options: { vaultPath: '/vault' } }, async ($, on) => {
+    const { files } = world(on)
+
+    await $.command.run(jot('til: fork sees the whole transcript\n\n- only the prompt can steer it'))
+
+    const [note] = [...files.values()]
+    expect(note?.text).toMatch(/title: "fork sees the whole transcript"/)
+    expect(note?.text).toMatch(/\n\nfork sees the whole transcript\n\n- only the prompt can steer it\n$/)
   })
 })
 
@@ -425,8 +625,8 @@ describe('/incubate (M3)', () => {
     })
   }
 
-  test('opens an idea by title and hands decisions to Claude', { options: { vaultPath: '/vault' } }, async ($, on) => {
-    const { submits } = world(on, shelves)
+  test('opens an idea by title and hands decisions to background subagents', { options: { vaultPath: '/vault' } }, async ($, on) => {
+    const { submits, spawns } = world(on, shelves)
     await $.command.run({ ...jot('replay mode'), command: 'incubate' })
     const ui = await pane($)
 
@@ -436,12 +636,15 @@ describe('/incubate (M3)', () => {
     await ui.press({ key: 'handoff' })
 
     const note = `${IDEAS}/Replay Mode.md`
-    expect(submits).toHaveLength(4)
-    expect(submits[0]).toContain(`Record a decision on the idea note ${note}: "Chose: Replay verdicts only".`)
-    expect(submits[1]).toContain(`Record a decision on the idea note ${note}: "Ship verdict replay first".`)
-    expect(submits[2]).toContain(`Incubate the idea note ${note}.`)
-    expect(submits[3]).toContain(`into a design doc at /work/app/docs/design/`)
-    expect(submits[3]).toContain('`handoff:`')
+    expect(submits).toEqual([])
+    const prompts = spawns.map(spawn => spawn.prompt)
+    expect(spawns.map(spawn => spawn.cwd)).toEqual(['/vault', '/vault', '/vault', '/work/app'])
+    expect(prompts).toHaveLength(4)
+    expect(prompts[0]).toContain(`Record a decision on the idea note ${note}: "Chose: Replay verdicts only".`)
+    expect(prompts[1]).toContain(`Record a decision on the idea note ${note}: "Ship verdict replay first".`)
+    expect(prompts[2]).toContain(`Incubate the idea note ${note}.`)
+    expect(prompts[3]).toContain(`into a design doc at /work/app/docs/design/`)
+    expect(prompts[3]).toContain('`handoff:`')
   })
 
   test('offers no hand-off from inside the vault itself', { options: { vaultPath: '/vault' } }, async ($, on) => {
@@ -454,8 +657,8 @@ describe('/incubate (M3)', () => {
     expect(await ui.find({ key: 'handoff' })).toBe(undefined)
   })
 
-  test('marks a reading item through Claude', { options: { vaultPath: '/vault' } }, async ($, on) => {
-    const { submits } = world(on, shelves)
+  test('marks a reading item in the background', { options: { vaultPath: '/vault' } }, async ($, on) => {
+    const { spawns } = world(on, shelves)
     await $.command.run({ ...jot(''), command: 'incubate' })
     const ui = await pane($)
 
@@ -464,7 +667,7 @@ describe('/incubate (M3)', () => {
     expect(await ui.find({ text: 'https://example.com/hooks' })).not.toBe(undefined)
     await ui.press({ key: 'mark:done' })
 
-    expect(submits[0]).toContain(`Set reading_state: done on the reading note ${READING}/Hooks Post.md.`)
+    expect(spawns[0]?.prompt).toContain(`Set reading_state: done on the reading note ${READING}/Hooks Post.md.`)
   })
 
   test('falls back to the idea list when the title matches nothing', { options: { vaultPath: '/vault' } }, async ($, on) => {
@@ -487,7 +690,7 @@ describe('/incubate (M3)', () => {
   })
 
   test('hands an idea off through the repo harness when it has one', { options: { vaultPath: '/vault' } }, async ($, on) => {
-    const { submits } = world(on, {
+    const { spawns } = world(on, {
       ...shelves,
       files: { ...shelves.files, '/work/app/docs/harness/index.md': { text: '# harness', mtimeMs: NOW } },
     })
@@ -497,8 +700,9 @@ describe('/incubate (M3)', () => {
     expect((await ui.find({ key: 'handoff' }))?.text).toBe('Hand off to app')
     await ui.press({ key: 'handoff' })
 
-    expect(submits[0]).toContain('/work/app/docs/harness/index.md')
-    expect(submits[0]).toContain('to-issues')
+    expect(spawns[0]?.prompt).toContain('/work/app/docs/harness/index.md')
+    expect(spawns[0]?.prompt).toContain('to-issues')
+    expect(spawns[0]?.cwd).toBe('/work/app')
   })
 
   test('shows an idea target in the list and detail header', { options: { vaultPath: '/vault' } }, async ($, on) => {
@@ -564,5 +768,92 @@ describe('repo footer', () => {
     await $.session.start({ cwd: '/vault', surface: 'terminal', isInteractive: true })
 
     expect(await footerOf($)).toMatchObject({ children: ['focus'] })
+  })
+})
+
+describe('related-notes index (M5)', () => {
+  const IDEAS = '/vault/wiki/ideas'
+  const files = {
+    [`${INBOX}/jot-20261007-note-ub.md`]: { text: '---\ntitle: "add /ub toggles"\nkind: note\ntarget: usage-band\n---\n\nx\n', mtimeMs: NOW },
+    [`${INBOX}/jot-20261008-pitfall-hermes.md`]: { text: '---\ntitle: "hermes PATH"\nkind: pitfall\norigin_repo: "git@github.com:me/usage-band.git"\n---\n\nx\n', mtimeMs: NOW },
+    [`${IDEAS}/Band Snooze.md`]: { text: '---\ntitle: "Band snooze"\nstatus: seed\ntarget: usage-band\n---\n', mtimeMs: NOW },
+  }
+
+  test('opens the conversation with the notes aimed at the repo', { options: { vaultPath: '/vault' } }, async ($, on) => {
+    world(on, { dirs: [INBOX, IDEAS], files, repoRoot: '/work/usage-band' })
+    on('prompt.context', async (_$, e) => ({ blocks: e.blocks }))
+    await $.session.start({ cwd: '/work/usage-band', surface: 'terminal', isInteractive: true })
+
+    const { blocks } = await $.prompt.context({ blocks: [{ name: 'currentDate', text: 'today' }] })
+
+    expect(blocks.map(block => block.name)).toEqual(['currentDate', 'vaultNotes'])
+    const text = blocks[1]?.text ?? ''
+    expect(text).toContain('For this repo (usage-band):\n- add /ub toggles — /vault/inbox/jot-20261007-note-ub.md\n- Band snooze — /vault/wiki/ideas/Band Snooze.md')
+    // captured from inside the repo, but not aimed at it
+    expect(text).toContain('Other inbox captures:\n- hermes PATH — /vault/inbox/jot-20261008-pitfall-hermes.md')
+  })
+
+  test('adds nothing when the vault cannot be read', async ($, on) => {
+    world(on)
+    on('prompt.context', async (_$, e) => ({ blocks: e.blocks }))
+
+    const { blocks } = await $.prompt.context({ blocks: [] })
+
+    expect(blocks).toEqual([])
+  })
+})
+
+describe('/jot as it is typed', () => {
+  const hint = { isDraft: true, isWorking: false, hint: '? for shortcuts' }
+
+  test('paints the kind and lists matching words under the prompt', { options: { vaultPath: '/vault' } }, async ($, on) => {
+    world(on, { repoRoot: '/work/usage-band' })
+    on('prompt.edit', async (_$, e) => ({ text: e.text.slice(0, e.start) + e.inputText + e.text.slice(e.end), cursor: e.start + e.inputText.length }))
+    on('ui.render', { component: 'PromptHint' }, async ($, e) => {
+      const { Text } = $.ui.resolve(e)
+
+      return <Text>{e.props.hint}{e.props.tail ?? ''}</Text>
+    })
+    await $.session.start({ cwd: '/work/usage-band', surface: 'terminal', isInteractive: true })
+    // The testing engine raises `prompt.edit` though its type does not list it.
+    const prompt = $.prompt as unknown as { edit: (e: PromptEditInput) => Promise<PromptEditResult> }
+    const edit = (text: string, inputText: string) =>
+      prompt.edit({ origin: { kind: 'composer' }, text, cursor: text.length, start: text.length, end: text.length, inputText })
+    const footer = async () =>
+      (await $.ui.mount({ plugin: 'vault-jot', surface: 'terminal', component: 'PromptHint', props: hint })).drawn()
+
+    const typed = await edit('/jot iddea', ':')
+    expect(typed.decorations).toEqual([{ start: 5, end: 10, color: 'red', underline: true }])
+    expect(await footer()).toMatchObject({ children: ['? for shortcuts', '  unknown kind "iddea"; did you mean idea?'] })
+
+    await edit('/jot idea @', 'u')
+    expect(await footer()).toMatchObject({ children: ['? for shortcuts', '  @usage-band'] })
+  })
+
+  test('the desktop band shows the candidates in place of the labels', { options: { vaultPath: '/vault' } }, async ($, on) => {
+    world(on, { files: { [`${INBOX}/a.md`]: { text: 'a', mtimeMs: NOW } } })
+    on('prompt.edit', async (_$, e) => ({ text: e.text.slice(0, e.start) + e.inputText + e.text.slice(e.end), cursor: e.start + e.inputText.length }))
+    on('ui.render', { component: 'AbovePrompt' }, async ($, e) => {
+      const { Text } = $.ui.resolve(e)
+
+      return <Text key="engine">engine</Text>
+    })
+    await $.session.start({ cwd: '/work/app', surface: 'desktop', isInteractive: true })
+    const prompt = $.prompt as unknown as { edit: (e: PromptEditInput) => Promise<PromptEditResult> }
+
+    await prompt.edit({ origin: { kind: 'composer' }, text: '/jot ', cursor: 5, start: 5, end: 5, inputText: 'i' })
+    const ui = await $.ui.mount({ plugin: 'vault-jot', surface: 'desktop', component: 'AbovePrompt', props: PROPS })
+
+    expect(await ui.find({ text: 'idea · improve · ingest' as never })).not.toBe(undefined)
+    expect(await ui.find({ text: /📥/ as never })).toBe(undefined)
+  })
+
+  test('refuses a mistyped kind instead of saving a note', { options: { vaultPath: '/vault' } }, async ($, on) => {
+    const { files } = world(on)
+
+    const ran = await $.command.run(jot('iddea: x'))
+
+    expect(ran.text).toBe('not saved: unknown kind "iddea"; did you mean idea?')
+    expect(files.size).toBe(0)
   })
 })

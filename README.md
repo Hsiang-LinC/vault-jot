@@ -28,13 +28,25 @@ Each capture becomes `inbox/jot-<YYYYMMDD-HHMMSS>-<kind>-<slug>.md` in the vault
 
 `improve @<target>:` is a change to make to an app. `<target>` is the repo's folder name, so a session in that repo can find it; leave it out when the jot is not about one app. Ingest files it as an `idea` with a `target`.
 
-The prompt footer shows the backlog (`📥 inbox 4 · 9d`), and `🛠 cx 3` when a session runs in a repo that has open ideas targeting it; problems such as an unset or unreadable `vaultPath` go to the status line instead. When the inbox reaches `backlogCount` captures or its oldest is `backlogDays` old, a band above the prompt offers **Ingest** (fills the prompt with an ingest request to review and send) and **Hide** (for this session).
+The prompt footer shows the backlog (`📥 inbox 4 · 9d`), and `🛠 cx 3` when a session runs in a repo that has open ideas targeting it; problems such as an unset or unreadable `vaultPath` go to the status line instead. When the inbox reaches `backlogCount` captures or its oldest is `backlogDays` old, a band above the prompt offers **Ingest** (runs ingest in a background subagent) and **Hide** (for this session).
 
-`/jot ingest` does the same on demand, at any backlog size: it fills the prompt with the ingest request for you to review and send. An empty inbox says so and fills nothing. Text that merely starts with the word (`/jot ingest is slow`) is still captured.
+`/jot ingest` does the same on demand, at any backlog size: it starts the ingest subagent right away. An empty inbox says so and starts nothing. Text that merely starts with the word (`/jot ingest is slow`) is still captured.
+
+### Recall from the vault
+
+`/recall <question>` sends a read-only background subagent into the vault, where it searches with claude-obsidian's `wiki-query` (and `wiki-retrieve` when needed). Its answer, with the notes it rests on, waits in the incubate pane under **Recall** (`c`); a toast says when it is ready. Nothing enters your conversation until you press **Add to chat**, which appends it to the session for the model to read on its next turn. `/recall` alone opens the answers. The last 10 are kept for the session; an answer is cut at 20,000 characters.
 
 ### Draft from the conversation
 
-`/jot` with no text asks a fork of the conversation for the one thing worth keeping, and puts it in your prompt as `/jot <kind>: <draft>`. Edit it and press Enter to save, or clear it. Nothing is saved until you do.
+Any kind can name the repo it is about: `/jot note @usage-band: add a toggle command`. That `target` is the note's subject, which may differ from the repo you were in when you jotted it; drafts fill it in when the conversation is about a specific repo.
+
+While you type `/jot`, the kind and `@target` turn green when known and a mistyped kind turns red; on the terminal the hint line under the prompt lists the kinds or targets that match what you have typed. A mistyped kind (`/jot iddea: …`) is refused rather than saved as a note.
+
+Each conversation starts with a short index of vault notes for Claude: captures and open ideas whose `target` is the session's repo, then the other inbox titles (titles and paths only, bounded). When your work relates to one of them, Claude says so and names the file.
+
+`/jot` with no text asks a fork of the conversation for the one thing worth keeping from the last few turns, and puts it in your prompt as `/jot <kind>: <draft>`. A kind alone (`/jot pitfall:`, `/jot improve @cx:`) drafts that kind. Edit the draft and press Enter to save, or clear it. Nothing is saved until you do.
+
+`/jot summary` summarizes the whole discussion instead: a title line with the insight, then the question, the wrong turns and what corrected them, and where you landed. It opens in a **Summary draft** pane: **Save** (`s`) writes it to the inbox, **Edit in prompt** (`e`) moves it into your prompt as a `/jot` command, **Discard** (`d`) drops it. The fork always reads the whole transcript; only its prompt decides what it looks at.
 
 ### Incubate
 
@@ -49,7 +61,7 @@ Shelves            🌱 Ideas 2   📖 Reading 1   Review
 └ Review           open ideas per app, seeds waiting 14+ days
 ```
 
-`/incubate <title>` jumps straight to an idea. Every change is handed to Claude as a prompt (recorded under "## Decisions", status moves, idea handed off to the repo), so claude-obsidian stays the only writer under `wiki/`. Within a state, ideas group by target.
+`/incubate <title>` jumps straight to an idea. Every change is handed to a background subagent of the session, so the turn you are in is never interrupted; a toast says when it starts and finishes (recorded under "## Decisions", status moves, idea handed off to the repo), so claude-obsidian stays the only writer under `wiki/`. Within a state, ideas group by target.
 
 **Hand off** appears when the session is in a repo other than the vault. If the repo has a harness (`docs/harness/index.md`), Claude uses that repo's `to-issues` (or `to-prd`) skill; otherwise it writes `docs/design/<title>.md`. Either way the idea gets `handoff:` (what was created), `project:`, and `status: archived`. Hotkeys: `b` back, `i`/`r`/`v` shelves and review, `1`–`9` choose an option, `e` expand, `x` hand off or drop.
 
@@ -101,4 +113,4 @@ claude plugin test .
 tsc -p .   # once the engine has loaded the mod and written .claude-plugin/types/
 ```
 
-`hooks/core.ts` (captures, backlog), `hooks/notes.ts` (reading notes) and `hooks/handoff.ts` (prompts for Claude) are pure; `hooks/register.tsx` is the only module that talks to Claude Code, because the engine follows `$` only into functions declared in the hooks module itself.
+`hooks/core.ts` (captures, backlog), `hooks/notes.ts` (reading notes) and `hooks/handoff.ts` (prompts for the subagents) are pure; `hooks/register.tsx` is the only module that talks to Claude Code, because the engine follows `$` only into functions declared in the hooks module itself.

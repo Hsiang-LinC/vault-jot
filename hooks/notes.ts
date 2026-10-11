@@ -81,8 +81,8 @@ export function stateOf(shelf: Shelf, note: Note): string {
   return shelf === 'ideas' ? (note.props.status ?? 'seed') : (note.props.reading_state ?? 'queued')
 }
 
-// An idea's `target` names the app it would change (an `improve` capture);
-// the pane matches it to the repo folder name.
+// A note's `target` names the repo it is about (`/jot <kind> @<repo>:`); the
+// pane and the related-notes index match it to the repo folder name.
 export const targetOf = (note: Note): string | undefined => note.props.target
 
 // Ideas within a state group by target, then title; untargeted ideas last.

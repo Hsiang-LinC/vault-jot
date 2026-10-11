@@ -7,6 +7,7 @@ import {
   isOverdue,
   localStamp,
   parseJot,
+  parseRequest,
   renderNote,
   slugify,
   summarizeInbox,
@@ -28,6 +29,7 @@ describe('parseJot', () => {
     expect(parseJot('improve @cx: smaller panel')).toEqual({ kind: 'improve', text: 'smaller panel', target: 'cx' })
     expect(parseJot('Improve  @trading-advisor.v2:fix it')).toEqual({ kind: 'improve', text: 'fix it', target: 'trading-advisor.v2' })
     expect(parseJot('improve: no target')).toEqual({ kind: 'improve', text: 'no target' })
+    expect(parseJot('note @usage-band: toggles')).toEqual({ kind: 'note', text: 'toggles', target: 'usage-band' })
   })
 
   test('an @target without a kind stays plain note text', () => {
@@ -143,5 +145,36 @@ describe('expandHome', () => {
 
   test('fails when HOME is needed but unset', () => {
     expect(() => expandHome('~/notes', undefined)).toThrow('HOME is not set')
+  })
+})
+
+describe('parseRequest', () => {
+  test('text is a capture, kind prefix and all', () => {
+    expect(parseRequest('til: x')).toEqual({ mode: 'capture', jot: { kind: 'til', text: 'x' } })
+    expect(parseRequest('ingest is slow')).toEqual({ mode: 'capture', jot: { kind: 'note', text: 'ingest is slow' } })
+    expect(parseRequest('summary of the week')).toEqual({ mode: 'capture', jot: { kind: 'note', text: 'summary of the week' } })
+  })
+
+  test('nothing, or a kind alone, drafts from the recent exchange', () => {
+    expect(parseRequest('  ')).toEqual({ mode: 'draft', scope: 'recent' })
+    expect(parseRequest('Pitfall:')).toEqual({ mode: 'draft', scope: 'recent', kind: 'pitfall' })
+    expect(parseRequest('improve @cx:  ')).toEqual({ mode: 'draft', scope: 'recent', kind: 'improve', target: 'cx' })
+  })
+
+  test('the reserved words, alone', () => {
+    expect(parseRequest(' Summary ')).toEqual({ mode: 'draft', scope: 'summary' })
+    expect(parseRequest('ingest')).toEqual({ mode: 'ingest' })
+  })
+})
+
+describe('kind typos', () => {
+  test('a near miss of a kind is refused, not saved as a note', () => {
+    expect(parseRequest('iddea: x')).toEqual({ mode: 'invalid', reason: 'unknown kind "iddea"; did you mean idea?' })
+    expect(parseRequest('pitfal @cx: x')).toEqual({ mode: 'invalid', reason: 'unknown kind "pitfal"; did you mean pitfall?' })
+  })
+
+  test('other text with a colon is still captured', () => {
+    expect(parseRequest('https://example.com')).toMatchObject({ mode: 'capture' })
+    expect(parseRequest('Remember: buy milk')).toMatchObject({ mode: 'capture', jot: { kind: 'note' } })
   })
 })
